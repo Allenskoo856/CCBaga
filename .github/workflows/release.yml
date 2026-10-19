@@ -1,6 +1,6 @@
 # [INPUT]: release 分支 commit、锁定依赖与 GitHub Secrets 中的 Apple 与更新签名凭据。
 # [OUTPUT]: macOS 双应用 DMG、Linux DEB/RPM/AppImage/Arch 包、Windows 当前用户 NSIS 安装器、带版本签名的主程序更新与公开清单、SHA-256、递增版本 tag 和 GitHub Release。
-# [POS]: release 自动发布与 main 手动旧安装样本验证；后者不签名/发布，仅仓库所有者触发/重跑，拒绝 fork、PR 或其他发布者。
+# [POS]: release 自动发布与 main 手动样本验证；仅成功构建保存完整依赖缓存，原有所有者/签名/验收门禁保持独立。
 # [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 name: Release
 on:
@@ -78,7 +78,6 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri -> target
-          cache-on-failure: true
       - name: Run checks
         run: |
           bun test
@@ -179,7 +178,6 @@ jobs:
         with:
           workspaces: src-tauri -> target
           shared-key: linux-ubuntu22
-          cache-on-failure: true
       - name: Test, build and verify Linux packages
         env:
           CC_RELEASE_VERSION: ${{ needs.version.outputs.version }}
@@ -207,7 +205,6 @@ jobs:
         with:
           workspaces: src-tauri -> target
           shared-key: linux-arch
-          cache-on-failure: true
       - name: Native Arch build and package verification
         env:
           CC_RELEASE_VERSION: ${{ needs.version.outputs.version }}
@@ -264,7 +261,6 @@ jobs:
         with:
           workspaces: src-tauri -> target
           shared-key: windows-msvc
-          cache-on-failure: true
       - name: Run Windows native, CLI, frontend and Skill checks
         if: inputs.installer_run == ''
         env:
