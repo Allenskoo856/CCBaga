@@ -1,5 +1,5 @@
 // [INPUT]: 临时 Claude 文件、虚构账号配置、隔离 SQLite 保险库与注入的进程状态。
-// [OUTPUT]: 文件范围、凭据脱敏、macOS/Windows Desktop 个人配置与 Linux 排除 macOS 路径、快照过期/不完整、运行/恢复阻断及部分失败回归。
+// [OUTPUT]: 文件范围/凭据脱敏、三平台个人资产、非空锁保留和空锁快照后新增内容拒绝、运行/恢复阻断及部分失败回归。
 // [POS]: 文件残留入口的离线安全验收；不改 HOME、不检查真实进程、不访问钥匙串或现有账号。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use super::*;
@@ -51,6 +51,38 @@ impl Drop for Fixture {
 }
 fn ids(scan: &Scan) -> Vec<String> {
     scan.items.iter().map(|item| item.id.clone()).collect()
+}
+
+#[test]
+fn nonempty_lock_directories_are_preserved_without_a_residue_deletion_snapshot() {
+    let f = Fixture::new();
+    for relative in targets::LOCK_PATHS { f.file(&format!("{relative}/personal-data"), "keep personal data"); }
+    let scan = collect(&f.0);
+    assert!(scan.items.is_empty());
+    for relative in targets::LOCK_PATHS {
+        let path = f.0.join(relative);
+        assert!(scan.warnings.iter().any(|warning| warning.contains(&path.display().to_string()) && warning.contains("已保留")));
+        // 共用身份白名单仍接受此真实数据；只有残留清理排除，不能破坏旧归档或明确选择。
+        assert!(crate::cleaner::identity::allowed(&f.0, &crate::cleaner::identity::Source {
+            path: path.clone(), category: "cache".into(), keys: Vec::new(),
+        }));
+        assert_eq!(fs::read(path.join("personal-data")).unwrap(), b"keep personal data");
+    }
+}
+
+#[test]
+fn empty_lock_directory_snapshot_cannot_delete_content_added_after_the_scan() {
+    let f = Fixture::new();
+    for relative in targets::LOCK_PATHS { crate::identities::private::directory(&f.0.join(relative)).unwrap(); }
+    let scan = collect(&f.0);
+    assert_eq!(scan.items.len(), targets::LOCK_PATHS.len());
+    assert!(scan.items.iter().all(|item| item.risk == "safe" && item.exact));
+    for relative in targets::LOCK_PATHS { f.file(&format!("{relative}/new-content"), "keep new content"); }
+    assert!(f.clean(&scan, &ids(&scan), || Ok(false)).is_err());
+    // 即使绕过重新计算的残留白名单，既有完整元数据指纹仍拒绝这一过期快照。
+    let error = transaction::perform_items(&f.0, &scan.items, &Cleaner::default(), || Ok(false), &Reporter::channel(None)).unwrap_err();
+    assert!(error.contains("变化"));
+    for relative in targets::LOCK_PATHS { assert_eq!(fs::read(f.0.join(relative).join("new-content")).unwrap(), b"keep new content"); }
 }
 
 #[test]

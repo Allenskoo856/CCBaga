@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# [INPUT]: 本地构建、安装前缀与 browser_ui 的实际页面资源验收。
-# [OUTPUT]: 用户前缀 A/B 桌面入口和可回滚的应用目录替换，不修改用户资料；回滚失败保留并报告恢复目录。
+# [INPUT]: 本地构建、安装前缀、固定 coreutils nice 原生执行器与 browser_ui 的实际页面资源验收。
+# [OUTPUT]: 用户前缀 A/B 桌面入口和可回滚安装；零优先级调整兼容 GLib 对含 %/= 路径的预检，不解释 shell 或环境赋值。
 # [POS]: Linux 源码安装边界；拒绝自定义启动器、链接父目录和仍运行的 A/B。
 # [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 import argparse
@@ -20,7 +20,8 @@ def desktop_exec(path):
     # Desktop Entry Exec has both string-value and argument quoting layers.
     for old, new in [('\\', '\\\\\\\\'), ('"', '\\\\"'), ('`', '\\\\`'), ('$', '\\\\$'), ('%', '%%')]:
         text = text.replace(old, new)
-    return f'"{text}"'
+    # GLib 先检查首参数是否存在，再展开 %%；nice -n 0 仅原样 exec，保持继承优先级。
+    return f'/usr/bin/nice -n 0 -- "{text}"'
 
 
 def install(build, prefix):

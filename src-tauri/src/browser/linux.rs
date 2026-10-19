@@ -1,5 +1,5 @@
-// [INPUT]: libexec 隔离的 Linux Chromium、兼容源码/Arch 资源目录、XDG 桌面入口与共用资料/随机令牌会话；测试使用真实 GIO。
-// [OUTPUT]: 本地引擎发现与启动、用户主动设置默认浏览器；双层转义及 URL 参数边界回归不注册真实默认程序。
+// [INPUT]: libexec 隔离的 Linux Chromium、XDG 桌面入口、固定 coreutils nice 原生执行器与共用资料/随机令牌会话；测试使用真实 GIO。
+// [OUTPUT]: 本地引擎启动与主动设置默认浏览器；零优先级调整绕过 GLib 在展开 %% 前的程序路径预检，不解释 shell 或环境赋值。
 // [POS]: browser 编排的 Linux 平台实现；只接收 URL/文件入口，不执行用户提供的 shell。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 fn register(_: &Path) -> Result<(), String> {
@@ -153,6 +153,10 @@ fn desktop_exec_escape(path: &str) -> Result<String, String> {
         .replace('$', "\\\\$")
         .replace('%', "%%"))
 }
+fn desktop_exec_command(path: &str) -> Result<String, String> {
+    // GLib 先查首参数再展开 %%；固定原生执行器兼容含 %/= 的路径，-n 0 保持继承优先级。
+    Ok(format!("/usr/bin/nice -n 0 -- \"{}\"", desktop_exec_escape(path)?))
+}
 #[test]
 fn desktop_exec_escapes_quotes_with_one_exec_layer_escape() {
     assert_eq!(desktop_exec_escape(r#"/opt/say "hi"/app"#).unwrap(), r#"/opt/say \\"hi\\"/app"#);
@@ -182,36 +186,69 @@ fn desktop_exec_escapes_quotes_with_one_exec_layer_escape() {
 fn desktop_exec_round_trips_through_real_gio() {
     use std::os::unix::fs::PermissionsExt;
     let root = tests::sample();
-    let executable = root.join("say \"hi\"\\`tick`$HOME 100% %U 中文").join("app");
-    fs::create_dir_all(executable.parent().unwrap()).unwrap();
-    fs::write(&executable, "#!/bin/sh\nprintf '%s\\0' \"$0\" \"$@\" > \"$CCBAGA_TEST_ARGV\"\n").unwrap();
-    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-    let desktop = root.join("fixture.desktop");
-    let escaped = desktop_exec_escape(executable.to_str().unwrap()).unwrap();
-    fs::write(&desktop, format!("[Desktop Entry]\nType=Application\nName=CCBaga fixture\nExec=\"{escaped}\" --browser %U\nTerminal=false\n")).unwrap();
-    let urls = ["https://example.invalid/first?q=two%20words&mark=%25", "https://example.invalid/second?q=%22quoted%22"];
-    let receipt = root.join("argv");
-    // 只运行临时无网络脚本；清空继承环境并隔离 HOME/XDG，不触碰实际默认程序。
-    let output = Command::new("gio").args(["launch"]).arg(&desktop).args(urls)
-        .env_clear().env("PATH", "/usr/bin:/bin").env("HOME", &root)
-        .env("XDG_DATA_HOME", root.join("data")).env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_CACHE_HOME", root.join("cache")).env("GIO_USE_VFS", "local")
-        .env("GSETTINGS_BACKEND", "memory").env("CCBAGA_TEST_ARGV", &receipt)
-        .current_dir(&root).stdin(Stdio::null()).output()
-        .expect("Linux regression requires the GIO tool supplied with GLib");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let mut arguments = vec![executable.to_str().unwrap(), "--browser"];
-    arguments.extend(urls);
-    let expected = arguments.iter().flat_map(|argument| argument.as_bytes().iter().copied().chain([0])).collect::<Vec<_>>();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if fs::read(&receipt).ok().as_ref() == Some(&expected) {
-            break;
+    for (index, name) in [
+        "say \"hi\"\\`tick`$HOME $(touch should-not-exist) 100% %U 中文",
+        "CCBAGA_ASSIGNMENT=value % 中文",
+        "--leading-option %U",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let executable = root.join(name).join("app");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, "#!/bin/sh\n/usr/bin/nice > \"$CCBAGA_TEST_NICE\"\nprintf '%s\\0' \"$0\" \"$@\" > \"$CCBAGA_TEST_ARGV\"\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let desktop = root.join("fixture.desktop");
+        let command = desktop_exec_command(executable.to_str().unwrap()).unwrap();
+        fs::write(&desktop, format!("[Desktop Entry]\nType=Application\nName=CCBaga fixture\nExec={command} --browser %U\nTerminal=false\n")).unwrap();
+        let urls = [
+            "https://example.invalid/first?q=two%20words&mark=%25",
+            "https://example.invalid/second?q=%22quoted%22",
+        ];
+        let receipt = root.join(format!("argv-{index}"));
+        let niceness = root.join(format!("nice-{index}"));
+        // 只运行临时无网络脚本；清空继承环境并隔离 HOME/XDG，不触碰实际默认程序。
+        let output = Command::new("/usr/bin/nice")
+            .args(["-n", "7", "--", "/usr/bin/gio", "launch"])
+            .arg(&desktop)
+            .args(urls)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &root)
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("GIO_USE_VFS", "local")
+            .env("GSETTINGS_BACKEND", "memory")
+            .env("CCBAGA_TEST_ARGV", &receipt)
+            .env("CCBAGA_TEST_NICE", &niceness)
+            .current_dir(&root)
+            .stdin(Stdio::null())
+            .output()
+            .expect("Linux regression requires the GIO tool supplied with GLib");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut arguments = vec![executable.to_str().unwrap(), "--browser"];
+        arguments.extend(urls);
+        let expected = arguments
+            .iter()
+            .flat_map(|argument| argument.as_bytes().iter().copied().chain([0]))
+            .collect::<Vec<_>>();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if fs::read(&receipt).ok().as_ref() == Some(&expected) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        let actual = fs::read(&receipt).expect("GIO did not launch the temporary fixture");
+        assert_eq!(actual, expected);
+        assert_eq!(fs::read_to_string(niceness).unwrap().trim(), "7");
+        assert!(!root.join("should-not-exist").exists());
     }
-    let actual = fs::read(&receipt).expect("GIO did not launch the temporary fixture");
-    assert_eq!(actual, expected);
     fs::remove_dir_all(root).unwrap();
 }
 #[tauri::command]
@@ -225,8 +262,8 @@ pub async fn browser_set_default(app: tauri::AppHandle) -> Result<DefaultBrowser
         fs::create_dir_all(desktop.parent().unwrap()).map_err(|_| "Cannot create applications directory.")?;
         // AppImage extraction paths are temporary: register the persistent AppImage when available.
         let executable = std::env::var_os("APPIMAGE").map(PathBuf::from).unwrap_or(std::env::current_exe().map_err(|_| "Cannot locate CCBaga-A.")?);
-        let escaped = desktop_exec_escape(&executable.to_string_lossy())?;
-        fs::write(&desktop, format!("[Desktop Entry]\nType=Application\nName=CCBaga-B\nExec=\"{escaped}\" --browser %U\nIcon=ccbaga-browser\nTerminal=false\nCategories=Network;WebBrowser;\nMimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;\n")).map_err(|_| "Cannot register CCBaga-B desktop entry.")?;
+        let command = desktop_exec_command(&executable.to_string_lossy())?;
+        fs::write(&desktop, format!("[Desktop Entry]\nType=Application\nName=CCBaga-B\nExec={command} --browser %U\nIcon=ccbaga-browser\nTerminal=false\nCategories=Network;WebBrowser;\nMimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;\n")).map_err(|_| "Cannot register CCBaga-B desktop entry.")?;
         for scheme in ["x-scheme-handler/http", "x-scheme-handler/https"] {
             let status = Command::new("xdg-mime").args(["default", LINUX_DESKTOP_ID, scheme]).status().map_err(|_| "Install xdg-utils to manage default applications.")?;
             if !status.success() { return Err("Default browser update failed; check desktop settings.".into()); }

@@ -54,7 +54,7 @@ export async function testIdentityTransfer(browser:Browser,base:string){
   await page.getByRole('button',{name:'导入',exact:true}).click();dialog=page.getByRole('dialog');
   assert.equal(await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).inputValue(),'');
   await dialog.getByRole('button',{name:'选择文件',exact:true}).click();await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).fill('synthetic-transfer-password');
-  await dialog.getByRole('checkbox',{name:'我会妥善保管迁移文件和密码',exact:true}).check();
+  await dialog.getByRole('checkbox',{name:'我确认备份来源可信，并了解恢复配置或插件可能执行其命令。',exact:true}).check();
   await page.evaluate(()=>{(window as any).identityFixture.setFailure('identities_import');});await dialog.getByRole('button',{name:'解密导入',exact:true}).click();
   await dialog.getByRole('alert').waitFor();assert.equal(await dialog.getByText('尚未选择文件',{exact:true}).count(),1);
   assert.equal(await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).inputValue(),'');assert.equal(await page.evaluate(()=>(window as any).identityFixture.state.active),active);checks++;
@@ -62,7 +62,7 @@ export async function testIdentityTransfer(browser:Browser,base:string){
   await dialog.getByRole('button',{name:'解密导入',exact:true}).click();await dialog.waitFor({state:'detached'});
   await page.getByRole('heading',{name:'Imported fixture',exact:true}).waitFor();assert.equal(await page.evaluate(()=>(window as any).identityFixture.state.active),active);checks++;
   await page.getByRole('button',{name:'导入',exact:true}).click();dialog=page.getByRole('dialog');
-  await dialog.getByRole('button',{name:'选择文件',exact:true}).click();await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).fill('synthetic-transfer-password');await dialog.getByRole('checkbox',{name:'我会妥善保管迁移文件和密码',exact:true}).check();
+  await dialog.getByRole('button',{name:'选择文件',exact:true}).click();await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).fill('synthetic-transfer-password');await dialog.getByRole('checkbox',{name:'我确认备份来源可信，并了解恢复配置或插件可能执行其命令。',exact:true}).check();
   await page.evaluate(()=>{(window as any).identityFixture.transfer.failAfterImport=true;});await dialog.getByRole('button',{name:'解密导入',exact:true}).click();
   await dialog.getByRole('alert').waitFor();await page.waitForFunction(()=>[...document.querySelectorAll('.identity-card h3')].filter(node=>node.textContent==='Imported fixture').length===2);assert.equal(await page.locator('.identity-card h3').filter({hasText:'Imported fixture'}).count(),2);assert.equal(await page.evaluate(()=>(window as any).identityFixture.state.active),active);
   assert.equal(await page.locator('.identity-operation').getAttribute('data-status'),'error');await dialog.getByRole('button',{name:'取消',exact:true}).click();checks++;

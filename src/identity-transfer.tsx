@@ -1,5 +1,5 @@
 /**
- * [INPUT]: 保存身份、原生一次性文件选择票据、密码与共享真实进度流。
+ * [INPUT]: 保存身份/浏览器绑定、原生一次性文件选择票据、密码、可信来源确认与共享真实进度流。
  * [OUTPUT]: 受控的加密迁移导出/导入确认；文件路径始终留在原生层，密码不持久化。
  * [POS]: 身份管理的迁移边界；仅处理保存档案，导入不切换身份，浏览器只可携带指纹配置。
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
@@ -48,7 +48,7 @@ export function IdentityTransfer({target,hasBrowser,onClose,onBusy,onState,activ
    {exporting&&<><label htmlFor="identity-transfer-repeat">{t('确认迁移密码')}</label><Input id="identity-transfer-repeat" type="password" autoComplete="off" aria-invalid={mismatch} value={repeat} disabled={busy} maxLength={1024} onChange={event=>setRepeat(event.target.value)}/>{hasBrowser?<Checkbox checked={includeBrowser} disabled={busy} onCheckedChange={setIncludeBrowser} label={t('包含浏览器指纹配置（不含网页登录资料）')}/>:<p>{t('此备份未关联浏览器配置。')}</p>}</>}
    {(tooLong||mismatch)&&<p role="alert">{t(tooLong?'密码超过 1024 个 UTF-8 字节。':'两次密码不一致。')}</p>}
    <p>{t('不迁移浏览器 Cookie、密码或保留在工作区的资料。已有同账号或指纹配置时拒绝覆盖。')}</p>
-   <Checkbox checked={accepted} disabled={busy} onCheckedChange={setAccepted} label={t('我会妥善保管迁移文件和密码')}/>
+   <Checkbox checked={accepted} disabled={busy} onCheckedChange={setAccepted} label={t(exporting?'我会妥善保管迁移文件和密码':'我确认备份来源可信，并了解恢复配置或插件可能执行其命令。')}/>
    {error&&<p role="alert" className="cleanup-feedback error">{t(error)}</p>}
   </div>
  </AppDialog>;

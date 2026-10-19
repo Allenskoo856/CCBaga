@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # [INPUT]: 可丢弃构建树、安装前缀、Linux 安装器、真实产物验收层和 Linux GIO 桌面解析器。
-# [OUTPUT]: 安装恢复/载荷边界及 Exec 双层解码和真实 GIO 参数往返回归；非 Linux 明确跳过 GIO。
+# [OUTPUT]: 安装边界和真实 GIO 特殊字符/%/= 路径往返、无 shell 执行与继承优先级不变；非 Linux 明确跳过 GIO。
 # [POS]: 离线临时目录测试，不安装到真实用户目录。
 # [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 import importlib.util
@@ -192,17 +192,26 @@ class InstallTests(unittest.TestCase):
             return out
         for text in ['/tmp/say "hi"/app', '/tmp/back\\slash/app', '/tmp/`tick`/$HOME/app',
                      '/tmp/mix "\\`$/app', '/tmp/中文 100% %U/app']:
-            self.assertEqual(decode(installer.desktop_exec(Path(text)).replace('%%', '%')), text)
+            command = installer.desktop_exec(Path(text))
+            self.assertTrue(command.startswith('/usr/bin/nice -n 0 -- '))
+            self.assertEqual(decode(command.removeprefix('/usr/bin/nice -n 0 -- ').replace('%%', '%')), text)
 
     @unittest.skipUnless(sys.platform == 'linux', 'Real GIO parsing requires Linux; pure two-layer decoding still runs')
     def test_exec_round_trips_through_real_gio_with_distinct_url_arguments(self):
         gio = shutil.which('gio')
         self.assertIsNotNone(gio, 'Linux regression requires the GIO tool supplied with GLib')
-        executable = self.root / 'say "hi"\\`tick`$HOME 100% %U 中文' / 'app'
+        for index, name in enumerate(['say "hi"\\`tick`$HOME $(touch should-not-exist) 100% %U 中文',
+                                      'CCBAGA_ASSIGNMENT=value % 中文', '--leading-option %U']):
+            with self.subTest(name=name):
+                self.check_gio_exec(gio, index, name)
+
+    def check_gio_exec(self, gio, index, name):
+        executable = self.root / name / 'app'
         executable.parent.mkdir()
-        executable.write_text('#!/bin/sh\nprintf \'%s\\0\' "$0" "$@" > "$CCBAGA_TEST_ARGV"\n')
+        executable.write_text('#!/bin/sh\n/usr/bin/nice > "$CCBAGA_TEST_NICE"\nprintf \'%s\\0\' "$0" "$@" > "$CCBAGA_TEST_ARGV"\n')
         executable.chmod(0o700)
-        receipt = self.root / 'argv'
+        receipt = self.root / f'argv-{index}'
+        niceness = self.root / f'nice-{index}'
         desktop = self.root / 'fixture.desktop'
         desktop.write_text('[Desktop Entry]\nType=Application\nName=CCBaga fixture\n'
                            f'Exec={installer.desktop_exec(executable)} --browser %U\nTerminal=false\n')
@@ -211,8 +220,9 @@ class InstallTests(unittest.TestCase):
         # 直接启动临时桌面文件，不注册默认程序；子进程无凭据且 HOME/XDG 全部隔离。
         environment = {'PATH': os.defpath, 'HOME': str(self.root), 'XDG_DATA_HOME': str(self.root / 'data'),
                        'XDG_CONFIG_HOME': str(self.root / 'config'), 'XDG_CACHE_HOME': str(self.root / 'cache'),
-                       'GIO_USE_VFS': 'local', 'GSETTINGS_BACKEND': 'memory', 'CCBAGA_TEST_ARGV': str(receipt)}
-        result = subprocess.run([gio, 'launch', str(desktop), *urls], env=environment, cwd=self.root,
+                       'GIO_USE_VFS': 'local', 'GSETTINGS_BACKEND': 'memory', 'CCBAGA_TEST_ARGV': str(receipt),
+                       'CCBAGA_TEST_NICE': str(niceness)}
+        result = subprocess.run(['/usr/bin/nice', '-n', '7', '--', gio, 'launch', str(desktop), *urls], env=environment, cwd=self.root,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = [str(executable).encode(), b'--browser', *(url.encode() for url in urls), b'']
@@ -223,6 +233,8 @@ class InstallTests(unittest.TestCase):
             time.sleep(.01)
         self.assertTrue(receipt.exists(), 'GIO did not launch the temporary fixture')
         self.assertEqual(receipt.read_bytes().split(b'\0'), expected)
+        self.assertEqual(niceness.read_text().strip(), '7')
+        self.assertFalse((self.root / 'should-not-exist').exists())
 
     def test_running_companion_blocks_replacement(self):
         installer.install(self.build, self.prefix)

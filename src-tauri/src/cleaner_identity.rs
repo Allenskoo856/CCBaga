@@ -310,24 +310,7 @@ pub(crate) fn running_processes() -> Result<Vec<ClaudeProcess>, String> {
 
 // ----- 锁仅从备份/恢复中排除，不借备份或结束进程删除工作区文件 -----
 pub(crate) fn transient_lock(root: &Path, source: &Path, data: &Path) -> bool {
-    if ![
-        ".claude/.oauth_refresh.lock",
-        ".claude/.oauth_refresh.lock.owner",
-        ".claude/daemon.lock",
-        ".claude.lock",
-        ".claude.json.lock",
-    ]
-    .iter()
-    .any(|rel| source == root.join(rel))
-    {
-        return false;
-    }
-    // 非空同名目录可能是用户资料；不能当作瞬态锁丢弃其中内容。
-    fs::symlink_metadata(data).is_ok_and(|meta| {
-        meta.is_file()
-            || (meta.is_dir()
-                && fs::read_dir(data).is_ok_and(|mut entries| entries.next().is_none()))
-    })
+    targets::transient_lock(root, source, data)
 }
 
 pub(crate) fn account_key(key: &str) -> bool {

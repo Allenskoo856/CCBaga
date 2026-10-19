@@ -1,9 +1,23 @@
 // [INPUT]: 当前用户目录、Windows 实际 AppData、Claude 清理白名单与可选组织编号。
-// [OUTPUT]: 分类清理目标（站点存储不含个人偏好、密码密钥或工作区）、无条目截断的目标发现与读取警告、完整目录元数据统计及受限旧组织文件匹配。
+// [OUTPUT]: 分类清理目标、五个固定锁的瞬态判定与非空/未知路径保留警告、完整目录元数据统计和受限旧组织文件匹配。
 // [POS]: 清理发现边界；不跟随链接，不遍历项目仓库，不读取凭据内容。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use super::*;
 use std::time::{Duration, Instant};
+
+pub(super) const LOCK_PATHS: [&str; 5] = [
+    ".claude/.oauth_refresh.lock", ".claude/.oauth_refresh.lock.owner", ".claude/daemon.lock",
+    ".claude.lock", ".claude.json.lock",
+];
+pub(super) fn lock_path(root: &Path, source: &Path) -> bool {
+    LOCK_PATHS.iter().any(|relative| source == root.join(relative))
+}
+pub(super) fn transient_lock(root: &Path, source: &Path, data: &Path) -> bool {
+    lock_path(root, source) && fs::symlink_metadata(data).is_ok_and(|metadata| {
+        !linked(&metadata) && (metadata.is_file() || (metadata.is_dir()
+            && fs::read_dir(data).is_ok_and(|mut entries| entries.next().is_none())))
+    })
+}
 
 pub(super) struct Target {
     pub path: PathBuf,
@@ -147,14 +161,11 @@ pub(super) fn definitions_with_warnings(root: &Path) -> (Vec<Target>, Vec<String
         ("todos", "待办缓存"),
         ("ide", "IDE 连接状态缓存"),
         ("daemon", "后台守护进程状态"),
-        ("daemon.lock", "后台守护进程锁"),
         ("daemon.log", "后台守护进程日志"),
         ("daemon.status.json", "后台守护进程状态记录"),
         ("downloads", "Code 下载缓存"),
         (".last-cleanup", "清理时间戳记录"),
         (".last-update-result.json", "更新结果记录"),
-        (".oauth_refresh.lock", "Code 缓存"),
-        (".oauth_refresh.lock.owner", "Code 缓存"),
     ] {
         result.push(target(
             root,
@@ -165,17 +176,21 @@ pub(super) fn definitions_with_warnings(root: &Path) -> (Vec<Target>, Vec<String
             "可重新生成，不移除登录、技能或设置。",
         ));
     }
-    for (relative, title) in [
-        (".claude.lock", "Code 配置互斥锁"),
-        (".claude.json.lock", "Code 配置互斥锁"),
-    ] {
+    for relative in LOCK_PATHS {
+        let path = root.join(relative);
+        let present = !fs::symlink_metadata(&path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        let reusable = !present || transient_lock(root, &path, &path);
+        if !reusable {
+            warnings.push(format!("锁路径不是普通文件或空目录，已保留：{}", path.display()));
+        }
+        // 全局定义仍保留路径，保证明确的身份归档/删除选择及旧归档白名单不被改变。
         result.push(target(
             root,
             relative,
-            title,
+            "Code 配置互斥锁",
             "cache",
-            "safe",
-            "可重新生成，不移除登录、技能或设置。",
+            if reusable { "safe" } else { "history" },
+            if reusable { "可重新生成，不移除登录、技能或设置。" } else { "锁路径内容不明，文件残留清理将保留此路径。" },
         ));
     }
     for (relative, title) in [

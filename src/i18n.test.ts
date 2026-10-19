@@ -44,6 +44,7 @@ test('原生错误、参数和原始路径可切换语言，未知消息原样�
   expect(translate('出口检测未完成（ipwho.is：HTTP 429；ipapi.co：网络连接失败）。请检查 TUN/代理连接后重试。')).toBe('Exit check failed (ipwho.is: HTTP 429; ipapi.co: Network connection failed). Check your TUN/proxy connection and retry.');
   expect(translate('浏览器资料重置未完成；已删除 2/5 个项目，后续未执行。浏览器资料发生变化。')).toBe('Browser cleanup did not finish. Deleted 2/5 items; remaining items were not processed. Browser data changed.');
   expect(translate('已删除：Default/Bookmarks')).toBe('Deleted: Default/Bookmarks');
+  expect(translate('锁路径不是普通文件或空目录，已保留：/fixture/.claude.lock')).toBe('Lock path is not a regular file or empty directory. Preserved: /fixture/.claude.lock');
   expect(translate('未知错误 0xABC')).toBe('未知错误 0xABC');
   expect(translate('__proto__')).toBe('__proto__');
   const raw='已发现 12 个可选项目。';

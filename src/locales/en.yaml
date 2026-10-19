@@ -1258,3 +1258,8 @@
 
 "密码超过 1024 个 UTF-8 字节。": "Password exceeds 1,024 UTF-8 bytes."
 "两次密码不一致。": "The passwords do not match."
+
+"锁路径不是普通文件或空目录，已保留：{v0}": "Lock path is not a regular file or empty directory. Preserved: {v0}"
+"锁路径内容不明，文件残留清理将保留此路径。": "Lock path contents are unknown. File cleanup will preserve this path."
+
+"我确认备份来源可信，并了解恢复配置或插件可能执行其命令。": "I trust this backup’s source and understand restored settings or plugins may run commands."
