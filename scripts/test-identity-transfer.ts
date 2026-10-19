@@ -1,6 +1,6 @@
 /**
  * [INPUT]: 隔离浏览器与虚构身份 IPC、原生选择票据和真实 Channel 回调。
- * [OUTPUT]: 导入/导出确认、密码/选择取消/失败不覆盖、实际进度及到期与进程未知状态回归。
+ * [OUTPUT]: 导入/导出确认、重选/取消清除来源确认、密码/失败不覆盖、实际进度及到期与进程未知状态回归。
  * [POS]: 身份迁移 GUI 的行为验收，无真实凭据/文件/原生命令或截图。
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
@@ -34,11 +34,12 @@ export async function testIdentityTransfer(browser:Browser,base:string){
   await dialog.getByRole('checkbox',{name:'我会妥善保管迁移文件和密码',exact:true}).check();assert.equal(await submit.isEnabled(),false);checks++;
   await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).fill('synthetic-transfer-password');await dialog.getByLabel('确认迁移密码',{exact:true}).fill('synthetic-transfer-password');
   await page.evaluate(()=>{(window as any).identityFixture.transfer.cancel=true;});await dialog.getByRole('button',{name:'选择保存位置',exact:true}).click();
-  await dialog.getByText('尚未选择文件',{exact:true}).waitFor();assert.equal(await submit.isEnabled(),false);checks++;
+  await dialog.getByText('尚未选择文件',{exact:true}).waitFor();assert.equal(await submit.isEnabled(),false);assert.equal(await dialog.getByRole('checkbox',{name:'我会妥善保管迁移文件和密码',exact:true}).isChecked(),false);checks++;
   await dialog.getByRole('button',{name:'选择保存位置',exact:true}).click();await dialog.getByText('fixture.bagapack',{exact:true}).waitFor();
   await page.evaluate(()=>{(window as any).identityFixture.transfer.failPick=true;});await dialog.getByRole('button',{name:'选择保存位置',exact:true}).click();
   await dialog.getByRole('alert').waitFor();assert.equal(await submit.isEnabled(),false);assert.equal(await dialog.getByText('尚未选择文件',{exact:true}).count(),1);checks++;
   await dialog.getByRole('button',{name:'选择保存位置',exact:true}).click();await dialog.getByText('fixture.bagapack',{exact:true}).waitFor();
+  await dialog.getByRole('checkbox',{name:'我会妥善保管迁移文件和密码',exact:true}).check();
   await dialog.getByRole('checkbox',{name:'包含浏览器指纹配置（不含网页登录资料）',exact:true}).check();
   const active=await page.evaluate(()=>(window as any).identityFixture.state.active);
   await page.evaluate(()=>{(window as any).identityFixture.defer('identities_export');});await submit.click();
@@ -55,10 +56,15 @@ export async function testIdentityTransfer(browser:Browser,base:string){
   assert.equal(await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).inputValue(),'');
   await dialog.getByRole('button',{name:'选择文件',exact:true}).click();await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).fill('synthetic-transfer-password');
   await dialog.getByRole('checkbox',{name:'我确认备份来源可信，并了解恢复配置或插件可能执行其命令。',exact:true}).check();
+  await dialog.getByRole('button',{name:'选择文件',exact:true}).click();await dialog.getByText('fixture.bagapack',{exact:true}).waitFor();
+  assert.equal(await dialog.getByRole('checkbox',{name:'我确认备份来源可信，并了解恢复配置或插件可能执行其命令。',exact:true}).isChecked(),false);
+  assert.equal(await dialog.getByRole('button',{name:'解密导入',exact:true}).isEnabled(),false);
+  await dialog.getByRole('checkbox',{name:'我确认备份来源可信，并了解恢复配置或插件可能执行其命令。',exact:true}).check();
   await page.evaluate(()=>{(window as any).identityFixture.setFailure('identities_import');});await dialog.getByRole('button',{name:'解密导入',exact:true}).click();
   await dialog.getByRole('alert').waitFor();assert.equal(await dialog.getByText('尚未选择文件',{exact:true}).count(),1);
   assert.equal(await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).inputValue(),'');assert.equal(await page.evaluate(()=>(window as any).identityFixture.state.active),active);checks++;
   await dialog.getByRole('button',{name:'选择文件',exact:true}).click();await dialog.getByLabel('迁移密码（至少 12 个字符）',{exact:true}).fill('synthetic-transfer-password');
+  await dialog.getByRole('checkbox',{name:'我确认备份来源可信，并了解恢复配置或插件可能执行其命令。',exact:true}).check();
   await dialog.getByRole('button',{name:'解密导入',exact:true}).click();await dialog.waitFor({state:'detached'});
   await page.getByRole('heading',{name:'Imported fixture',exact:true}).waitFor();assert.equal(await page.evaluate(()=>(window as any).identityFixture.state.active),active);checks++;
   await page.getByRole('button',{name:'导入',exact:true}).click();dialog=page.getByRole('dialog');

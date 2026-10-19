@@ -1,6 +1,6 @@
 /**
  * [INPUT]: 保存身份/浏览器绑定、原生一次性文件选择票据、密码、可信来源确认与共享真实进度流。
- * [OUTPUT]: 受控的加密迁移导出/导入确认；文件路径始终留在原生层，密码不持久化。
+ * [OUTPUT]: 受控的加密迁移导出/导入确认；每次文件重选先清票据与确认，路径留在原生层，密码不持久化。
  * [POS]: 身份管理的迁移边界；仅处理保存档案，导入不切换身份，浏览器只可携带指纹配置。
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
@@ -23,7 +23,7 @@ export function IdentityTransfer({target,hasBrowser,onClose,onBusy,onState,activ
  const mismatch=exporting&&repeat.length>0&&password!==repeat;
  const valid=Array.from(password).length>=12&&!tooLong&&(!exporting||password===repeat);
  async function pick(){
-  if(!target||busy)return;setGrant(null);setBusy(true);setError('');
+  if(!target||busy)return;setGrant(null);setAccepted(false);setBusy(true);setError('');
   try{const chosen=await invoke<Grant|null>('identities_transfer_pick',{kind:exporting?'export':'import'});if(chosen)setGrant(chosen);}
   catch(error){setError(String(error));}finally{setBusy(false);}
  }

@@ -44,7 +44,7 @@ CLI 管理：Claude 身份页提供一键卸载/重装，确认后结束全部�
 发布权限：官方版本仅由仓库所有者 liseami 发布，CI 同时核对仓库、触发者与重跑者；PR/main 检查不接触签名凭据。README 不承载发布、公证操作文章。
 发布契约：开发构建默认临时签名；release-macos.py 使用外部环境变量指定 Developer ID 和 Apple API key，先公证装订浏览器，再将其归档嵌入宿主，最后公证宿主与双应用 DMG。单个 DMG 同时交付两个应用；每次品牌化都明确设置浏览器 Bundle ID（不能依赖本机旧引擎）；安装盘验收核对双应用名称/标识/入口。哈希锁定的 dmgbuild 只用于发布，写入像素背景与固定拖拽布局，不依赖 Finder GUI。必须取得 Accepted、装订票据并通过 Gatekeeper；不以移除隔离属性替代验收。装订后的 A 由官方 CLI 生成带版本签名的 .app.tar.gz 与公开 latest.json；仅公钥进入应用，原生 updater 强制验证版本，安装后重启，B 继续使用完整 DMG。CI 只缓存 Rust 依赖，签名私钥不传给构建子进程。密钥和发布产物不入 Git。
 交付流程：视觉验收由项目所有者完成；获得发布授权后，同步推送 main 与 release 的同一已验收提交，release 触发递增版本和 tag；公开产物验收成功后核对两分支一致，再回复并关闭相关 issue，避免提交中的关闭关键字提前结束问题。版本说明描述当前产品与安装方式。所有平台构建、载荷、签名更新清单和公开下载验收成功后完成交付；历史 Release 与 tag 默认全部保留，方便回退和对比，失败时保留当前可用版本。源码安装与引擎替换：可捕获的取消包含在回滚范围内，目录实际移动后发生异常也按磁盘状态恢复；双重失败保留并报告恢复目录。Mac/Linux 安装前、三平台正式载荷与构建 CI 共用页面实际资源引用检查，不用任意 JS 存在替代完整性。此契约不宣称断电/强制结束的崩溃原子性或并发安装安全。本机开发使用 bun run dev:install：debug/custom-protocol 内嵌 UI、临时签名、双应用事务重装到 /Applications 并启动/激活；开发模式拒绝外部安装盘，只允许临时签名包。正式交付使用 Developer ID、公证/Gatekeeper 和双应用 DMG，公开安装包保持强验收。
-安全契约：src-tauri/SECURITY.md 描述数据流与外部连接；进程参数只在原生层识别，Machine.system_proxy 禁止序列化；宿主无用户信息上传服务；验证未覆盖的第三方、桌面或远程行为不得宣称通过。
+安全契约：src-tauri/SECURITY.md 描述数据流、外部连接与已确认上游依赖风险；进程参数只在原生层识别，Machine.system_proxy 禁止序列化；宿主无用户信息上传服务；验证未覆盖的第三方、桌面或远程行为不得宣称通过。
 Linux x86_64 适配：见 docs/linux.md；平台配置拆分为 tauri.macos.conf.json / tauri.linux.conf.json。Linux 原生边界位于 src-tauri/src/linux.rs，浏览器使用带哈希固定的 LinuxBrowser 与 XDG 启动项；标准 Linux 包在 Ubuntu 22.04 构建并逐个检查实际 ELF 的 glibc 2.35 上限，Arch 保持独立当前发行版；版本任务后并行构建 macOS/Ubuntu/Arch；DEB/RPM/AppImage 引擎隔离在 libexec，避免宿主打包工具改写；Linux 实际安装包均解包核验，四格式与 macOS 同批验收后由所有者统一发布，Linux 不接触 Apple/更新私钥。
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 
