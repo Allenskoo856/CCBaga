@@ -1,6 +1,6 @@
 <!--
 [INPUT]: Agent Skills 规范、npm skills 通用安装器、五项 AI 工具和完整自包含资源。
-[OUTPUT]: 跨平台 npm/npx 安装与更新、隐私边界和分阶段命令索引。
+[OUTPUT]: 跨平台 npm/npx 安装与更新、同站点缺货说明、隐私边界和分阶段命令索引。
 [POS]: 网络页 Skill 按钮的公开落点；安装与远端部署分开授权。
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 -->
@@ -74,6 +74,12 @@ Use a local coding agent that you trust with these sensitive setup details; info
 
 The provider entrance configuration is centralized in [providers.json](providers.json). `network.py links` produces the original two purchase addresses, also used by the application's buttons. Plan inventory/prices must be checked before paying.
 
+### If a product is unavailable / 缺货时
+
+The AI can help you compare another region or equivalent plan on the **same supplier website**, or wait for restocking. It rechecks the required specifications before you choose: a Debian 12/13 VPS with public IPv4 and root key SSH, and a fixed Static Residential / ISP proxy with Direct Connection, Username/Password and SOCKS5. You approve any changed region, plan or price and make the purchase yourself. It does not switch suppliers, place orders for you or change the original purchase links. Availability is checked on the supplier's current page; offline tests do not prove stock.
+
+缺货时，可在原供应商网站选择其他地区的同类套餐，或等待补货。AI 会先核对 VPS 的 Debian 12/13、公网 IPv4、root 密钥 SSH，以及静态 ISP 出口、Direct Connection、账号密码和 SOCKS5 等必要规格；地区、套餐和价格变化由你选择，购买由你完成。不自动更换平台、不代购、不改原有链接。库存以供应商当时页面为准，离线测试不代表有货。
+
 ## Agent command reference
 
 **These commands are for the AI, not tasks for the user.** Use Python 3.10+, OpenSSH and curl on macOS/Linux. On native Windows use Python 3.12+, Microsoft OpenSSH Client and curl.exe; invoke the same scripts with `python` or `py -3`. The AI handles prerequisites, paths and commands. Private files use verified current-user-only NTFS ACLs; no WSL is required. Windows TUN service installation may need administrator approval. Run commands relative to the installed skill directory (or use absolute paths):
@@ -91,6 +97,8 @@ python3 scripts/network.py tun-check       # actual system exit, bypass proxy en
 ```
 
 `configure` accepts all nine fields on standard input: `vps`, `pem`, `ppk`, `pub`, `home_host`, integer `home_port`, `home_user`, `home_pass`, `expected_ip`. It validates before writing, refuses overwrites and Git/skill destinations, and never prints credentials. `--config /absolute/private/connection.json` selects another private config. SSH is root:22 with the matching PEM; password and Agent authentication are disabled. First identity uses TOFU; compare the provider fingerprint before continuing. Later commands reject unknown/changed host keys.
+
+Hosts may be valid IPv4, unbracketed IPv6 without `%scope`, or ASCII DNS names; mistyped IPv4 and numeric final DNS labels are rejected. `expected_ip` must be a string containing a fixed, unscoped IP literal. The helper adds IPv6 brackets for SOCKS5 itself. 主机地址支持合法 IPv4、无 `%作用域` 的裸 IPv6 或 ASCII 域名；错误 IPv4 与纯数字结尾域名会被拒绝，预期出口必须是字符串形式的固定 IP。
 
 Deployment targets an authorized Debian 12/13 server. It changes system packages, SSH/firewall and Xray services; failures may leave partial changes. The bundled server script keeps root-owned identity state and timestamped backups. It is not a universal installer for existing production servers.
 

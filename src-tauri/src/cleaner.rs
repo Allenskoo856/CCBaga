@@ -520,11 +520,7 @@ pub(crate) fn cli_running() -> Result<bool, String> {
     Ok(processes()?.iter().any(|process| {
         matches!(
             process.name.as_str(),
-            "Claude Code"
-                | "claude"
-                | "claude.exe"
-                | "claude-code"
-                | "claude-code-vm"
+            "Claude Code" | "claude" | "claude.exe" | "claude-code" | "claude-code-vm"
         )
     }))
 }
@@ -673,9 +669,6 @@ pub(crate) fn stop_processes() -> Result<usize, String> {
     }
     if running()? {
         return Err("仍有 Claude 进程在运行。".into());
-    }
-    if let Ok(root) = home() {
-        identity::clear_stale_locks(&root);
     }
     Ok(targets.len())
 }

@@ -1,5 +1,5 @@
 // [INPUT]: Cleaner 白名单、共享 Code 登录键常量、完整目录快照、用户保留策略与 JSON 配置。
-// [OUTPUT]: 受限身份目标、配置身份键与 githubRepoPaths 的提取/清空/恢复，保留工作区未选择的个人资产及桌面身份路径元数据检测。
+// [OUTPUT]: 受限身份目标、窄配置提取/清空/恢复、保留策略与桌面身份元数据检测、区分查询错误的进程结果和瞬态锁分类；不自动删除锁。
 // [POS]: 身份保险库复用原有路径边界；不扫描项目源码、Shell 或系统代理配置。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use super::*;
@@ -304,12 +304,30 @@ pub(crate) fn ensure_stopped() -> Result<(), String> {
     }
 }
 
-pub(crate) fn processes_running() -> Result<bool, String> {
-    running()
+pub(crate) fn running_processes() -> Result<Vec<ClaudeProcess>, String> {
+    super::processes()
 }
 
-pub(crate) fn running_processes() -> Vec<ClaudeProcess> {
-    super::processes().unwrap_or_default()
+// ----- 锁仅从备份/恢复中排除，不借备份或结束进程删除工作区文件 -----
+pub(crate) fn transient_lock(root: &Path, source: &Path, data: &Path) -> bool {
+    if ![
+        ".claude/.oauth_refresh.lock",
+        ".claude/.oauth_refresh.lock.owner",
+        ".claude/daemon.lock",
+        ".claude.lock",
+        ".claude.json.lock",
+    ]
+    .iter()
+    .any(|rel| source == root.join(rel))
+    {
+        return false;
+    }
+    // 非空同名目录可能是用户资料；不能当作瞬态锁丢弃其中内容。
+    fs::symlink_metadata(data).is_ok_and(|meta| {
+        meta.is_file()
+            || (meta.is_dir()
+                && fs::read_dir(data).is_ok_and(|mut entries| entries.next().is_none()))
+    })
 }
 
 pub(crate) fn account_key(key: &str) -> bool {
@@ -325,39 +343,4 @@ pub(crate) fn desktop_present(root: &Path) -> bool {
             crate::identities::private::parents(s.path.parent().unwrap()).is_ok()
                 && crate::identities::private::safe(&s.path).is_ok()
         })
-}
-
-fn remove_safe_entry(path: &Path) {
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return;
-    };
-    if linked(&meta) || canonicalize(path).ok().as_deref() != Some(path) {
-        return;
-    }
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if crate::identities::private::parents(parent).is_err()
-        || crate::identities::private::safe(path).is_err()
-    {
-        return;
-    }
-    if meta.is_dir() {
-        let _ = fs::remove_dir_all(path);
-    } else if meta.is_file() {
-        let _ = fs::remove_file(path);
-    }
-}
-
-/// 清理 Claude Code 在异常退出、进程强杀或切换账号后遗留的 OAuth / 配置互斥锁文件，防止下次启动阻塞或报锁冲突。
-pub(crate) fn clear_stale_locks(root: &Path) {
-    for rel in [
-        ".claude/.oauth_refresh.lock",
-        ".claude/.oauth_refresh.lock.owner",
-        ".claude/daemon.lock",
-        ".claude.lock",
-        ".claude.json.lock",
-    ] {
-        remove_safe_entry(&root.join(rel));
-    }
 }

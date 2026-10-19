@@ -1,5 +1,5 @@
-// [INPUT]: macOS/Linux/Windows 平台边界、Tauri 生命周期、发布构建 custom-protocol 与清理、CLI 安装管理、浏览器、地区、系统、固定网络资源导航与独立界面语言命令及官方签名更新/重启插件。
-// [OUTPUT]: CCBaga-A窗口、托盘、SQLite 本地身份暂存/恢复、独立文件残留扫描/选择清理、身份进程停止和 CLI 管理、固定网络入口与 CI 固定启动诊断。
+// [INPUT]: 跨平台原生边界、Tauri 生命周期/custom-protocol、身份/清理/浏览器/系统命令与官方签名更新、重启、Rust 原生文件选择插件。
+// [OUTPUT]: CCBaga-A 窗口/托盘、身份与一次性文件选择迁移命令；文件路径留在原生状态，不开放通用 WebView 文件能力。
 // [POS]: 应用编排层；不注册翻译快捷键，不读取翻译设置或 API 密钥。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -12,16 +12,16 @@ mod cleaner;
 mod identities;
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "windows")]
-mod windows;
 mod native;
+mod network_links;
 mod progress;
 mod regions;
 mod system;
 mod ui_language;
 #[cfg(test)]
 mod updater_tests;
-mod network_links;
+#[cfg(target_os = "windows")]
+mod windows;
 use tauri::{tray::TrayIconBuilder, Manager};
 fn show(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -62,7 +62,11 @@ pub(crate) fn startup_trace(stage: &str) {
     if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
         // CI 只记录固定启动阶段，不读取文件正文、参数或凭据。
         let path = std::env::temp_dir().join("ccbaga-ci-startup.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             use std::io::Write;
             let _ = writeln!(file, "{stage}");
         }
@@ -74,6 +78,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             #[cfg(target_os = "linux")]
             if args.iter().any(|arg| arg == "--browser") {
@@ -93,6 +98,7 @@ fn main() {
             app.manage(ui_language::UiLanguage::load(app.handle()));
             app.manage(cleaner::Cleaner::default());
             app.manage(browser::Browser::default());
+            app.manage(identities::portable::Transfers::default());
             #[cfg(target_os = "macos")]
             browser::companion(app.handle().clone());
             #[cfg(target_os = "linux")]
@@ -141,6 +147,9 @@ fn main() {
             identities::identities_switch,
             identities::identities_rename,
             identities::identities_delete,
+            identities::portable::identities_transfer_pick,
+            identities::portable::identities_export,
+            identities::portable::identities_import,
             claude_cli::claude_cli_read,
             claude_cli::claude_cli_manage,
             regions::get_regions,

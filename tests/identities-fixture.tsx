@@ -17,9 +17,9 @@ import {setLocale} from '../src/i18n';
 import '../src/index.css';
 import '../src/style.css';
 const id=(number:number)=>number.toString(16).padStart(32,'0');
-const user={present:true,display_name:'Fixture user',email:'fixture@example.invalid',organization:'Fixture team',plan:'Pro',auth_status:'valid',unavailable:false};
-const summaries=Object.fromEntries(Array.from({length:40},(_,n)=>[id(n+1),{email:`user${n+1}@example.invalid`,organization:`Org ${n+1}`,plan:n%2===0?'Max 20x':'Pro',auth_status:'valid'}]));
-const state:IdentityState={browser:{enabled:true,bound_ids:[]},browser_warning:null,active:id(1),recovery:null,running:true,sessions:[{pid:4201,workspace:'CCBaga',entrypoint:'VS Code'}],current:{...user},summaries,records:Array.from({length:40},(_,n)=>({id:id(n+1),name:`Identity ${n+1}`,saved_at:1780000000000+n,bytes:2048,policy:{...defaultPolicy}}))};
+const user={present:true,display_name:'Fixture user',email:'fixture@example.invalid',organization:'Fixture team',plan:'Pro',auth_status:'local_unexpired',expires_at:Date.now()+3600000,unavailable:false};
+const summaries=Object.fromEntries(Array.from({length:40},(_,n)=>[id(n+1),{email:`user${n+1}@example.invalid`,organization:`Org ${n+1}`,plan:n%2===0?'Max 20x':'Pro',auth_status:'local_unexpired',expires_at:Date.now()+3600000}]));
+const state:IdentityState={browser:{enabled:true,bound_ids:[]},browser_warning:null,active:id(1),recovery:null,running:true,processes:[{pid:4201,workspace:null,entrypoint:'VS Code'}],processes_truncated:false,current:{...user},summaries,records:Array.from({length:40},(_,n)=>({id:id(n+1),name:`Identity ${n+1}`,saved_at:1780000000000+n,bytes:2048,policy:{...defaultPolicy}}))};
 const browserMode=new URLSearchParams(location.search).get('panel')==='browser';
 const browserState:BrowserState={ui_language:'zh',exit_services:[],region:null,config:{seed:123,proxy:'',follow_machine:true,language:'en-US',timezone:'America/New_York',native_graphics:true},machine:{platform:'macos',version:'fixture',cores:8,timezone:'America/New_York',languages:['en-US'],locale:'en_US',locale_country:'US',location_enabled:false,timezones:['America/New_York']},engine_version:'fixture',engine_ready:true,running:false,profile:'/fixture/profiles/current',identity_linked:true,cache:[],cache_error:'',report:null,report_received_at:null,machine_exit:null,checks:[]};
 const commands:{command:string;args:any}[]=[];
@@ -34,7 +34,8 @@ const residueItems:Scan['items']=[
 ];
 type Pending={command:string;args:any;resolve:(value:unknown)=>void;reject:(error:Error)=>void;index:number};
 const deferred=new Set<string>(),pending:Pending[]=[];
-const fixture={commands,state,residue,browser:browserState,browserBusy:false,get identityReads(){return identityReads;},get pending(){return pending.map(row=>row.command);},language:setLocale,setFailure:(command:string)=>{fail=command;},recover:()=>{state.recovery=id(1);},
+const transfer={cancel:false,failPick:false,failAfterImport:false};
+const fixture={commands,state,residue,transfer,browser:browserState,browserBusy:false,get identityReads(){return identityReads;},get pending(){return pending.map(row=>row.command);},language:setLocale,setFailure:(command:string)=>{fail=command;},recover:()=>{state.recovery=id(1);},
  defer:(...names:string[])=>{for(const name of names)deferred.add(name);},
  emitProgress:(command:string,event:Progress)=>{
   const entry=pending.find(row=>row.command===command);if(!entry)throw Error(`No pending command: ${command}`);
@@ -64,6 +65,14 @@ function execute(command:string,args:any){
  if(browserMode&&command==='browser_read')return structuredClone(browserState);
  if(browserMode&&command==='browser_default_read')return {is_default:true,http:'fixture',https:'fixture',installed:true,app:'CCBaga-B'};
  if(browserMode&&command==='browser_clear'){browserState.cache=[];return structuredClone(browserState);}
+ if(command==='identities_transfer_pick'){if(transfer.failPick){transfer.failPick=false;throw Error('fixture file selection failed');}if(transfer.cancel){transfer.cancel=false;return null;}return {token:'fixture-grant',file_name:'fixture.bagapack'};}
+ if(command==='identities_export')return structuredClone(state);
+ if(command==='identities_import'){
+  const nextId=id(8000+commands.length);state.records.push({id:nextId,name:'Imported fixture',saved_at:Date.now(),bytes:4096,policy:{...defaultPolicy}});
+  state.summaries[nextId]={email:'imported@example.invalid',organization:null,plan:null,auth_status:'unknown'};
+  if(transfer.failAfterImport){transfer.failAfterImport=false;throw Error('fixture state refresh failed after import');}
+  return structuredClone(state);
+ }
  if(command==='identities_browser'){state.browser.enabled=args.enabled;if(args.enabled&&!state.browser.bound_ids.includes(state.active))state.browser.bound_ids.push(state.active);return structuredClone(state);}
  if(command==='browser_launch'){state.browser_warning=null;return {};}
  if(command==='identities_read'){identityReads++;return structuredClone(state);}
@@ -81,17 +90,16 @@ function execute(command:string,args:any){
   return {cleaned:selected.length,errors:[],completed:true} satisfies CleanResult;
  }
  if(command==='claude_cli_read')return {method:'',path:'',version:''};
- if(command==='identities_stop'){state.running=false;state.sessions=[];return {running:false};}
+ if(command==='identities_stop'){state.running=false;state.processes=[];return {running:false};}
  if(command==='identities_save'){
   const existing=state.records.find(row=>row.id===state.active);
   if(existing){existing.name=args.currentName;existing.saved_at=1780000010000+commands.length;existing.policy={...args.policy};}
-  else {const nextId=id(1000+commands.length);state.records.push({id:nextId,name:args.currentName,saved_at:1780000010000+commands.length,bytes:4096,policy:{...args.policy}});state.active=nextId;state.summaries[nextId]={email:state.current.email,organization:state.current.organization,plan:state.current.plan,auth_status:state.current.auth_status};}
-  if(state.browser.enabled&&!state.browser.bound_ids.includes(state.active))state.browser.bound_ids.push(state.active);
+  else {const nextId=id(1000+commands.length);state.records.push({id:nextId,name:args.currentName,saved_at:1780000010000+commands.length,bytes:4096,policy:{...args.policy}});state.active=nextId;state.summaries[nextId]={email:state.current.email,organization:state.current.organization,plan:state.current.plan,auth_status:state.current.auth_status,expires_at:state.current.expires_at};}
   return structuredClone(state);
  }
  if(command==='identities_switch'){
   if(args.recover){state.recovery=null;state.current={...user};return structuredClone(state);}
-  if(state.current.present){const existing=state.records.find(row=>row.id===state.active);if(existing){existing.saved_at=1780000010000+commands.length;existing.policy={...args.policy};}else{const nextId=id(1000+commands.length);state.records.push({id:nextId,name:args.currentName,saved_at:1780000010000+commands.length,bytes:4096,policy:{...args.policy}});state.summaries[nextId]={email:state.current.email,organization:state.current.organization,plan:state.current.plan,auth_status:state.current.auth_status};}}
+  if(state.current.present){const existing=state.records.find(row=>row.id===state.active);if(existing){existing.saved_at=1780000010000+commands.length;existing.policy={...args.policy};}else{const nextId=id(1000+commands.length);state.records.push({id:nextId,name:args.currentName,saved_at:1780000010000+commands.length,bytes:4096,policy:{...args.policy}});state.summaries[nextId]={email:state.current.email,organization:state.current.organization,plan:state.current.plan,auth_status:state.current.auth_status,expires_at:state.current.expires_at};}}
   if(state.browser.enabled){if(state.active!=='empty'&&!state.browser.bound_ids.includes(state.active))state.browser.bound_ids.push(state.active);if(args.targetId!=='empty'&&!state.browser.bound_ids.includes(args.targetId))state.browser.bound_ids.push(args.targetId);}
   state.active=args.targetId;
   state.current=args.targetId==='empty'?{present:false,display_name:null,email:null,organization:null,plan:null,auth_status:null,unavailable:false}:{...user,display_name:state.records.find(row=>row.id===args.targetId)!.name};

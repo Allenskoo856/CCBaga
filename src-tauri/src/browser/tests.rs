@@ -3,7 +3,7 @@
 // [POS]: 浏览器模块行为验证；不访问用户实际资料。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use super::*;
-fn machine() -> Machine {
+pub(super) fn machine() -> Machine {
     Machine {
         platform: "macos".into(),
         version: "27.2.0".into(),

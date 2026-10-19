@@ -15,6 +15,7 @@ import {testBrowserProfiles} from './test-browser-profiles.ts';
 import {testBrowserCleanup} from './test-browser-cleanup.ts';
 import {testNetworkDiagnostics} from './test-network-diagnostics.ts';
 import {testClaudeResidue} from './test-claude-residue.ts';
+import {testIdentityTransfer} from './test-identity-transfer.ts';
 import {testIdentityOperation} from './test-identity-operation.ts';
 const engine=process.platform==='darwin'?'Browser.app/Contents/MacOS/Chromium':process.platform==='win32'?'WindowsBrowser/chrome.exe':'LinuxBrowser/chrome';
 const server=await createServer({server:{host:'127.0.0.1',port:0,strictPort:false,watch:{ignored:['**/src-tauri/**','**/browser-runtime/**','**/releases/**','**/dist/**']}},optimizeDeps:{include:['@tauri-apps/api/mocks']}});
@@ -78,12 +79,14 @@ try{
  await page.mouse.click(3,3);assert.equal(await dialog.count(),1);
  await dialog.getByRole('button',{name:'取消'}).click();
  assert.equal(await page.evaluate(()=>((window as any).identityFixture.commands as any[]).filter(row=>row.command==='identities_delete').length),0);checks++;
- assert.match(await current.innerText(),/已备份/);assert.match(await current.innerText(),/Pro/);assert.match(await current.innerText(),/凭据有效/);
+ assert.match(await current.innerText(),/已备份/);assert.match(await current.innerText(),/Pro/);assert.match(await current.innerText(),/本地未过期/);
  const savedSecond=cards.filter({has:page.getByRole('heading',{name:'Identity 2',exact:true})});
  assert.match(await savedSecond.innerText(),/user2@example\.invalid/);assert.match(await savedSecond.innerText(),/Org 2/);
  await current.getByRole('button',{name:'更新备份',exact:true}).click();
  dialog=page.getByRole('dialog');await dialog.waitFor();
- assert.match(await dialog.innerText(),/PID 4201/);assert.match(await dialog.innerText(),/CCBaga/);
+ assert.match(await dialog.innerText(),/PID 4201/);assert.match(await dialog.innerText(),/VS Code/);
+ assert.equal(await dialog.locator('.identity-confirm-keep').filter({hasText:'纳入加密备份'}).getByText('登录与身份数据 · 会话历史 · 缓存与日志',{exact:true}).count(),1);
+ assert.match(await dialog.locator('.identity-confirm-keep').filter({hasText:'留在工作区'}).innerText(),/Skills 与命令/);
  await dialog.getByRole('button',{name:'确认保存备份',exact:true}).click();
  await page.waitForFunction(()=>((window as any).identityFixture.commands as any[]).some(row=>row.command==='identities_save'));
  assert.equal(await page.evaluate(()=>(window as any).identityFixture.state.current.present),true);checks++;
@@ -140,6 +143,7 @@ try{
  checks+=await testNetworkDiagnostics(browser,base);
  checks+=await testClaudeResidue(browser,base);
  checks+=await testIdentityOperation(browser,base);
+ checks+=await testIdentityTransfer(browser,base);
  checks+=await testBrowserProfiles(resolve('browser-runtime',engine),base,temporary,env);
  console.log(`${checks} identity, browser and network UI simulation checks passed; no native commands or user data used.`);
 }finally{await browser.close();await server.close();await rm(temporary,{recursive:true,force:true});}

@@ -1,5 +1,5 @@
-// [INPUT]: libexec 隔离的 Linux Chromium、兼容源码/Arch 资源目录、XDG 桌面入口与共用资料/随机令牌会话。
-// [OUTPUT]: 本地引擎发现与启动、用户主动设置默认浏览器。
+// [INPUT]: libexec 隔离的 Linux Chromium、兼容源码/Arch 资源目录、XDG 桌面入口与共用资料/随机令牌会话；测试使用真实 GIO。
+// [OUTPUT]: 本地引擎发现与启动、用户主动设置默认浏览器；双层转义及 URL 参数边界回归不注册真实默认程序。
 // [POS]: browser 编排的 Linux 平台实现；只接收 URL/文件入口，不执行用户提供的 shell。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 fn register(_: &Path) -> Result<(), String> {
@@ -141,8 +141,7 @@ fn default_read() -> Result<DefaultBrowser, String> {
             .to_string(),
     })
 }
-// Desktop Entry Exec has two quoting layers (string-value escapes around the Exec double-quote
-// rules), so each reserved character is prefixed by an escaped backslash: `"` becomes two backslashes plus the quote.
+// Desktop Entry 字符串先解码，再应用 Exec 双引号规则；双引号前因此写两个反斜杠。
 fn desktop_exec_escape(path: &str) -> Result<String, String> {
     if path.contains(['\n', '\r']) {
         return Err("Invalid application path.".into());
@@ -160,6 +159,60 @@ fn desktop_exec_escapes_quotes_with_one_exec_layer_escape() {
     assert_eq!(desktop_exec_escape(r"/opt/a\b/app").unwrap(), r"/opt/a\\\\b/app");
     assert_eq!(desktop_exec_escape("/opt/`x`/$HOME/100%").unwrap(), r"/opt/\\`x\\`/\\$HOME/100%%");
     assert!(desktop_exec_escape("/opt/a\nb").is_err());
+    assert!(desktop_exec_escape("/opt/a\rb").is_err());
+    for original in [r#"/opt/say "hi"/app"#, r"/opt/back\slash/app", "/opt/`tick`/$HOME/中文 100% %U/app"] {
+        let encoded = desktop_exec_escape(original).unwrap().replace("%%", "%");
+        let string_decoded = encoded.replace("\\\\", "\0");
+        assert!(!string_decoded.contains('\\'));
+        let exec_decoded = string_decoded.replace('\0', "\\");
+        let mut characters = exec_decoded.chars();
+        let mut decoded = String::new();
+        while let Some(character) = characters.next() {
+            if character == '\\' {
+                decoded.push(characters.next().unwrap());
+            } else {
+                assert!(!matches!(character, '"' | '`' | '$'));
+                decoded.push(character);
+            }
+        }
+        assert_eq!(decoded, original);
+    }
+}
+#[test]
+fn desktop_exec_round_trips_through_real_gio() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tests::sample();
+    let executable = root.join("say \"hi\"\\`tick`$HOME 100% %U 中文").join("app");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    fs::write(&executable, "#!/bin/sh\nprintf '%s\\0' \"$0\" \"$@\" > \"$CCBAGA_TEST_ARGV\"\n").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let desktop = root.join("fixture.desktop");
+    let escaped = desktop_exec_escape(executable.to_str().unwrap()).unwrap();
+    fs::write(&desktop, format!("[Desktop Entry]\nType=Application\nName=CCBaga fixture\nExec=\"{escaped}\" --browser %U\nTerminal=false\n")).unwrap();
+    let urls = ["https://example.invalid/first?q=two%20words&mark=%25", "https://example.invalid/second?q=%22quoted%22"];
+    let receipt = root.join("argv");
+    // 只运行临时无网络脚本；清空继承环境并隔离 HOME/XDG，不触碰实际默认程序。
+    let output = Command::new("gio").args(["launch"]).arg(&desktop).args(urls)
+        .env_clear().env("PATH", "/usr/bin:/bin").env("HOME", &root)
+        .env("XDG_DATA_HOME", root.join("data")).env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_CACHE_HOME", root.join("cache")).env("GIO_USE_VFS", "local")
+        .env("GSETTINGS_BACKEND", "memory").env("CCBAGA_TEST_ARGV", &receipt)
+        .current_dir(&root).stdin(Stdio::null()).output()
+        .expect("Linux regression requires the GIO tool supplied with GLib");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let mut arguments = vec![executable.to_str().unwrap(), "--browser"];
+    arguments.extend(urls);
+    let expected = arguments.iter().flat_map(|argument| argument.as_bytes().iter().copied().chain([0])).collect::<Vec<_>>();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if fs::read(&receipt).ok().as_ref() == Some(&expected) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let actual = fs::read(&receipt).expect("GIO did not launch the temporary fixture");
+    assert_eq!(actual, expected);
+    fs::remove_dir_all(root).unwrap();
 }
 #[tauri::command]
 pub async fn browser_set_default(app: tauri::AppHandle) -> Result<DefaultBrowser, String> {

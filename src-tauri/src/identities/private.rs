@@ -1,5 +1,5 @@
 // [INPUT]: 标准库文件系统、当前用户身份与 Windows ACL API。
-// [OUTPUT]: 私有目录/文件、链接与所有权检查、同步原子写入与超过 MAX_PATH 的 Win32 名称调用。
+// [OUTPUT]: 私有目录/文件、可拒绝已存在目标的独占目录创建、链接与所有权检查、同步原子写入和 Win32 长路径调用。
 // [POS]: 身份保险库的磁盘边界；创建时明确用户所有者/DACL，已有父目录仅校验而不覆写权限；Win32 调用统一使用长路径。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use std::{fs, io::Write, path::Path};
@@ -150,28 +150,35 @@ pub fn directory(path: &Path) -> Result<(), String> {
                 directory(parent)?;
             }
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            fs::DirBuilder::new()
-                .mode(0o700)
-                .create(path)
-                .map_err(|_| "无法创建身份目录。")?;
-        }
-        #[cfg(windows)]
-        windows_create(path, |wide, attributes| {
-            if unsafe {
-                windows_sys::Win32::Storage::FileSystem::CreateDirectoryW(wide, attributes)
-            } == 0
-            {
-                Err("无法创建身份目录。".into())
-            } else {
-                Ok(())
-            }
-        })?;
-        return protect(path);
+        return create_directory(path);
     }
     safe(path)
+}
+pub fn create_directory(path: &Path) -> Result<(), String> {
+    parents(path.parent().ok_or("身份路径无效。")?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(path)
+            .map_err(|_| "无法创建身份目录。")?;
+    }
+    #[cfg(windows)]
+    windows_create(path, |wide, attributes| {
+        if unsafe { windows_sys::Win32::Storage::FileSystem::CreateDirectoryW(wide, attributes) }
+            == 0
+        {
+            Err("无法创建身份目录。".into())
+        } else {
+            Ok(())
+        }
+    })?;
+    if let Err(error) = protect(path) {
+        let _ = fs::remove_dir(path);
+        return Err(error);
+    }
+    Ok(())
 }
 pub fn create(path: &Path) -> Result<fs::File, String> {
     parents(path.parent().ok_or("身份路径无效。")?)?;

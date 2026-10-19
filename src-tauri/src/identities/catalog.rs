@@ -1,5 +1,5 @@
 // [INPUT]: 有界 OAuth 账号元数据、本机密钥、已认证旧归档与 SQLite 目录。
-// [OUTPUT]: 稳定的本机 HMAC 账号索引、旧记录去重与已提交归档代次回收。
+// [OUTPUT]: 稳定的本机 HMAC 账号索引、显式事务内旧账号索引迁移与已提交归档代次回收；缺摘要不主动解包。
 // [POS]: 只按账号 UUID/组织（缺失时邮箱/组织）匹配；令牌刷新、名称变更不产生新身份。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use super::{database::Database, private, store::Store};
@@ -85,12 +85,11 @@ pub(super) fn current_id(
 }
 impl Store {
     pub(super) fn index_legacy(&self) -> Result<(), String> {
-        let summaries = self.db.summaries()?;
         for record in self
             .db
             .records()?
             .into_iter()
-            .filter(|r| r.account_key.is_none() || (!r.empty && !summaries.contains_key(&r.id)))
+            .filter(|r| r.account_key.is_none())
         {
             // 损坏的旧副本不自动删除；用户仍可单独删除或保留排查。
             let Ok(stage) = self.load(&record) else {

@@ -1,3 +1,9 @@
+<!--
+[INPUT]: 原生保险库的保留策略、事务/进程/浏览器边界与显式密码迁移。
+[OUTPUT]: 身份保存、恢复与同系统跨设备迁移的真实能力和限制。
+[POS]: README 与使用指南的存储契约，不包含真实账号或凭据。
+[PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+-->
 # Local identity storage
 
 CCBaga manages a local snapshot, not a server-side identity. Sign-in validity is determined by Anthropic. Only manage accounts you own and use them in accordance with the official terms.
@@ -20,9 +26,13 @@ Saving a recognized account updates its existing slot and preserves its custom n
 
 Each update writes a new immutable archive generation. The archive is synchronized and fully authenticated before SQLite commits its pointer together with the recovery marker. Old generations are collected only after a committed replacement; a rejected database update leaves the previous generation intact. The recovery checkpoint is independent and cannot overwrite the snapshot needed for rollback.
 
-SQLite v1/v2 catalogs migrate transactionally to v3. Legacy snapshots are indexed after archive verification. Duplicate recognized slots converge after a completed operation. Damaged and unidentified snapshots are not silently merged.
+SQLite v1/v2 catalogs migrate transactionally to v3. Legacy snapshots are indexed after archive verification during explicit identity operations; ordinary refresh does not decrypt the archive list or backfill missing summaries. Duplicate recognized slots converge after a completed operation. Damaged and unidentified snapshots are not silently merged.
 
 New archives use [Zstandard](https://github.com/facebook/zstd) level 3 with a checksum inside the existing AES-256-GCM authenticated container. Old gzip archives remain readable. Decoders validate the encrypted terminator, reject appended or truncated data and bound the Zstd window. Scratch extraction files do not need per-file synchronization because the durable authenticated archive remains the recovery source; restored workspace files are synchronized before completion.
+
+**Save backup / Update backup** stops recognized Claude processes after confirmation and saves the selected current state without changing workspace files, sign-in state or the active browser binding. The confirmation distinguishes data included in the encrypted backup from categories kept in the workspace. It does not automatically delete OAuth or configuration locks. Confirmed transient lock files and empty lock directories are excluded from new archives and old archive restores; nonempty same-name directories remain real data under the selected retention policy.
+
+Plan and credential badges describe bounded local metadata only. A known future expiry is shown as locally unexpired; absent or legacy expiry data remains unknown. Expired credentials with a refresh token indicate that a refresh can be attempted, not that automatic renewal or server access is assured. The UI updates when a known local expiry passes. Process previews show at most 32 detected process names/PIDs; query failure is unknown, not an empty list. Old session files are not trusted to identify live workspaces.
 
 The identity stop command shares the precise process matcher with CLI maintenance without rescanning all historical files. File traversal retains ownership and link checks, checks process state periodically and forces checks at transaction boundaries. It does not remove the recovery or validation steps to improve speed.
 
@@ -42,7 +52,7 @@ The vault is protected local storage, not an isolation boundary against other pr
 
 ## Linked browser data
 
-**Link browser** is on by default for users without a saved preference; an explicit choice to turn it off is preserved. Initial browser data stays in place and is associated on the first identity save. Later identities get separate Chromium user data directories and configurations; existing data is retained. When re-enabling linking, the confirmation allows choosing whether to associate existing data with an unbound identity. Each directory uses Chromium's internal `Default` profile, with separate cookies and site storage. Switching closes the linked browser normally and reopens the selected directory. Save browser work first.
+**Link browser** is on by default for users without a saved preference; an explicit choice to turn it off is preserved. Initial browser data stays in place and is associated during an explicit linked identity switch or browser-link confirmation. Saving a backup alone never changes the active browser selection. Later identities get separate Chromium user data directories and configurations; existing data is retained. When re-enabling linking, the confirmation allows choosing whether to associate existing data with an unbound identity. Each directory uses Chromium's internal `Default` profile, with separate cookies and site storage. Switching closes the linked browser normally and reopens the selected directory. Save browser work first.
 
 SQLite commits the browser selection with the identity switch and restores the previous selection during rollback. An interrupted identity operation blocks browser startup until recovery. An empty identity receives a fresh browser directory. Reopening a saved identity reuses its directory; browser data is not compressed, copied or merged during switching. A failure to reopen the browser is reported separately after a committed identity change, with a retry action.
 
@@ -53,3 +63,13 @@ Browser data remains outside the encrypted identity archive. Chromium and the OS
 First use still requires website sign-in. Restoring Code/Desktop credentials does not create website cookies or verify that all clients use the same account. Separate profiles do not change the public IP, prevent server-side correlation, or guarantee that browsers, extensions and websites make no external connections. Custom profiles created manually inside Chromium remain outside the identity-card model. See the [Chromium user data directory reference](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md).
 
 The browser check page places a compact identity card above the environment checks. It shows bounded display fields for the local browser binding, not a verified website login. If the browser belongs to A but local Claude metadata changes to B, the card retains A and marks it out of sync. Account tokens, account UUIDs and matching digests are never included in the page context. Disconnected and unreadable states are explicit.
+
+## Move a saved identity to another device
+
+Use **Export** on a saved card or the current card’s saved backup, select a new `.bagapack` filename and enter a password of at least 12 characters (at most 1,024 UTF-8 bytes). The confirmation lists the snapshot's scope. Keep the file and password private: the package contains saved sign-in material and the files included by that snapshot's retention policy. Data left shared in the source workspace is excluded.
+
+On the other device, use **Import**, select the package and enter the same password. Imports require the same operating system. The package is fully authenticated and checked against the native path/member whitelist before a new local archive is committed. The new device re-encrypts it using its own vault key and derives its own account matching digest. Existing identities and browser bindings are never overwritten; duplicate recognized accounts or conflicting fingerprint settings are rejected. Import does not switch the current identity, open a browser or access the live Keychain. A failed import leaves existing saved identities intact.
+
+Browser transfer is available only for a saved identity with an existing browser binding; saving an unbound draft does not establish that binding. The optional browser transfer carries only the fingerprint seed and environment/display settings. It excludes cookies, website passwords, site sessions, explicit proxy settings and OS-protected browser keys. Website sign-in is still required. Windows Desktop may also require signing in again because OS/DPAPI-bound data is not re-keyed for the new device; a successful file import does not validate the transferred login. Historical file contents and project paths are not rewritten, so references to paths on the old computer may need adjustment. The local vault key, SQLite database and recovery log are never exported.
+
+The versioned package uses a random salt, PBKDF2-HMAC-SHA256 with 600,000 iterations and the existing AES-256-GCM authenticated stream around tar/Zstd. Import rejects links, unsafe/duplicate members, incompatible versions and payloads above 8 GiB or 100,000 data members. Native file selection yields a one-use five-minute ticket; arbitrary paths are not accepted from the UI. Passwords are not saved or logged. There is no password recovery.

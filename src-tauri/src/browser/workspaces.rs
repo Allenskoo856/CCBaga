@@ -1,5 +1,5 @@
 // [INPUT]: 身份 SQLite 绑定、独立浏览器根目录、受限配置和用户确认后的切换事务。
-// [OUTPUT]: 每身份独占资料/配置选择、初始稳定种子、安全退出/重开与崩溃时启动阻断；退出成功与随后同步各自发出真实阶段事件。
+// [OUTPUT]: 独占资料选择、安全退出/重开与恢复阻断；迁移只读绑定配置或创建全新配置/seed.owner，不改变选择、不复制浏览器会话。
 // [POS]: 身份与浏览器的协调边界；资料不压缩、不复制、不合并 Cookie，失败状态如实返回。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use super::*;
@@ -66,6 +66,89 @@ pub(super) fn ensure(root: &Path) -> Result<PathBuf, String> {
     }
     private::directory(&path.join("profile"))?;
     Ok(path)
+}
+pub(crate) fn portable_config(app: &tauri::AppHandle, id: &str) -> Result<Option<Config>, String> {
+    let browser = app.state::<Browser>();
+    let _guard = browser.gate.lock().unwrap();
+    portable_config_at(&root(app)?, id)
+}
+pub(super) fn portable_config_at(root: &Path, id: &str) -> Result<Option<Config>, String> {
+    if !crate::identities::valid_id(id) {
+        return Err("身份编号无效。".into());
+    }
+    let db = database(root)?;
+    let Some(slot) = db.browser_for(id)? else { return Ok(None); };
+    let path = slot_path(root, &slot)?;
+    private::parents(&path)?;
+    private::safe(&path)?;
+    let read = |name: &str, max: u64| -> Result<Vec<u8>, String> {
+        use std::io::Read;
+        let file = path.join(name);
+        profile::check_path(root, &file)?;
+        private::safe(&file)?;
+        let meta = fs::symlink_metadata(&file).map_err(|_| "无法读取迁移浏览器配置。")?;
+        if !meta.is_file() || meta.len() > max {
+            return Err("迁移浏览器配置无效。".into());
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(file)
+            .map_err(|_| "无法读取迁移浏览器配置。")?
+            .take(max + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "无法读取迁移浏览器配置。")?;
+        if bytes.len() as u64 > max {
+            return Err("迁移浏览器配置无效。".into());
+        }
+        Ok(bytes)
+    };
+    let config: Config = serde_json::from_slice(&read("config.json", 64 * 1024)?)
+        .map_err(|_| "迁移浏览器配置无效。")?;
+    // 手动换指纹可改变 config.seed；owner 证明此目录仍属于原有绑定。
+    let expected = db.browser_seed(&slot)?.ok_or("迁移浏览器绑定无效。")?;
+    if read("seed.owner", 32)? != expected.to_string().as_bytes() || config.seed == 0 {
+        return Err("迁移浏览器绑定无效。".into());
+    }
+    config::proxy(&config.proxy)?;
+    Ok(Some(config))
+}
+pub(crate) fn portable_prepare(
+    app: &tauri::AppHandle,
+    slot: &str,
+    config: &Config,
+) -> Result<PathBuf, String> {
+    let browser = app.state::<Browser>();
+    let _guard = browser.gate.lock().unwrap();
+    portable_prepare_at(&root(app)?, slot, config, &config::machine()?)
+}
+pub(super) fn portable_prepare_at(
+    root: &Path,
+    slot: &str,
+    config: &Config,
+    machine: &Machine,
+) -> Result<PathBuf, String> {
+    if !crate::identities::valid_id(slot) {
+        return Err("迁移浏览器绑定无效。".into());
+    }
+    config.validate(machine)?;
+    let path = slot_path(root, slot)?;
+    if fs::symlink_metadata(&path).is_ok() {
+        return Err("迁移浏览器资料已存在；未覆盖。".into());
+    }
+    private::directory(path.parent().ok_or("浏览器资料选择无效。")?)?;
+    // create_dir 必须失败于已存在目录，不能复用或清理别人先创建的资料。
+    private::create_directory(&path)?;
+    let result = (|| {
+        config::save(&path, config)?;
+        private::write(&path.join("seed.owner"), config.seed.to_string().as_bytes())?;
+        Ok::<_, String>(path.clone())
+    })();
+    if result.is_err() {
+        for name in ["config.json", "seed.owner"] {
+            let _ = fs::remove_file(path.join(name));
+        }
+        let _ = fs::remove_dir(&path);
+    }
+    result
 }
 fn block(app: &tauri::AppHandle, root: &Path) -> Result<(), String> {
     private::directory(root)?;

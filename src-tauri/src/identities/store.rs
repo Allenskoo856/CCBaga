@@ -1,5 +1,5 @@
 // [INPUT]: SQLite 目录、用户策略、白名单源、已验收归档代次、认证加密与平台凭据桥。
-// [OUTPUT]: 已验证身份归档、先暂存后切换、持久恢复记录、原位配置合并、直接删除与清除/恢复/凭据/提交/回滚真实进度。
+// [OUTPUT]: 不改工作区/浏览器选择的原地备份、先暂存后切换、持久恢复记录、原位配置合并、显式删除与真实阶段进度；旧归档瞬态锁不恢复。
 // [POS]: 身份的文件事务；SQLite 与文件系统由恢复日志协调，不能假装是同一原子事务。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use super::{
@@ -33,7 +33,16 @@ pub(super) fn problem(_: impl std::fmt::Display) -> String {
 }
 impl Store {
     pub fn open(vault: &Path, home: &Path) -> Result<Self, String> {
+        Self::open_inner(vault, home, true)
+    }
+    pub(super) fn open_for_transfer(vault: &Path, home: &Path) -> Result<Self, String> {
+        Self::open_inner(vault, home, false)
+    }
+    fn open_inner(vault: &Path, home: &Path, maintenance: bool) -> Result<Self, String> {
         let db = Database::open(vault)?;
+        if !maintenance && db.get("recovery")?.is_some() {
+            return Err("请先恢复未完成的身份切换。".into());
+        }
         let key_path = vault.join("key.bin");
         if !key_path.exists() {
             if !db.records()?.is_empty()
@@ -51,36 +60,38 @@ impl Store {
         if key.len() != 32 {
             return Err("身份密钥无效。".into());
         }
-        for entry in fs::read_dir(vault).map_err(problem)? {
-            let p = entry.map_err(problem)?.path();
-            if p.file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.strip_prefix(".stage-").is_some_and(super::valid_id))
-            {
-                private::safe(&p)?;
-                fs::remove_dir_all(p).map_err(problem)?;
+        if maintenance {
+            for entry in fs::read_dir(vault).map_err(problem)? {
+                let p = entry.map_err(problem)?.path();
+                if p.file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.strip_prefix(".stage-").is_some_and(super::valid_id))
+                {
+                    private::safe(&p)?;
+                    fs::remove_dir_all(p).map_err(problem)?;
+                }
             }
-        }
-        let records = db.records()?;
-        for entry in fs::read_dir(vault).map_err(problem)? {
-            let path = entry.map_err(problem)?.path();
-            if let Some(id) = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.strip_prefix(".trash-"))
-                .filter(|s| super::valid_id(s))
-            {
-                private::safe(&path)?;
-                if let Some(record) = records.iter().find(|r| r.id == id) {
-                    if !super::catalog::archive_name(&record.archive) {
-                        return Err("身份归档编号无效。".into());
+            let records = db.records()?;
+            for entry in fs::read_dir(vault).map_err(problem)? {
+                let path = entry.map_err(problem)?.path();
+                if let Some(id) = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.strip_prefix(".trash-"))
+                    .filter(|s| super::valid_id(s))
+                {
+                    private::safe(&path)?;
+                    if let Some(record) = records.iter().find(|r| r.id == id) {
+                        if !super::catalog::archive_name(&record.archive) {
+                            return Err("身份归档编号无效。".into());
+                        }
+                        let original = vault.join(&record.archive);
+                        if !original.exists() {
+                            fs::rename(&path, original).map_err(problem)?;
+                        }
+                    } else {
+                        fs::remove_file(path).map_err(problem)?;
                     }
-                    let original = vault.join(&record.archive);
-                    if !original.exists() {
-                        fs::rename(&path, original).map_err(problem)?;
-                    }
-                } else {
-                    fs::remove_file(path).map_err(problem)?;
                 }
             }
         }
@@ -93,7 +104,7 @@ impl Store {
             #[cfg(test)]
             fail_after_clear: false,
         };
-        if store.db.get("recovery")?.is_none() {
+        if maintenance && store.db.get("recovery")?.is_none() {
             store.index_legacy()?;
             store.collect_generations()?;
         }
@@ -141,7 +152,7 @@ impl Store {
     pub(super) fn records(&self) -> Vec<Record> {
         self.db.records().unwrap()
     }
-    fn record(&self, id: &str) -> Result<Record, String> {
+    pub(super) fn record(&self, id: &str) -> Result<Record, String> {
         if !super::valid_id(id) {
             return Err("身份编号无效。".into());
         }
@@ -158,6 +169,13 @@ impl Store {
             .iter()
             .enumerate()
             .filter_map(|(n, s)| {
+                if identity::transient_lock(
+                    &stage.manifest.home,
+                    &s.path,
+                    &stage.path.join(format!("data/{n}")),
+                ) {
+                    return None;
+                }
                 if s.keys.is_empty() && s.category != "settings" && policy.keeps(&s.category) {
                     return None;
                 }
@@ -251,7 +269,7 @@ impl Store {
         );
         Ok(())
     }
-    fn restore(
+    pub(super) fn restore(
         &self,
         stage: &Stage,
         sources: &[(usize, Source)],
@@ -412,28 +430,16 @@ impl Store {
             return Err("请先恢复未完成的身份切换。".into());
         }
         self.stopped()?;
-        identity::clear_stale_locks(&self.home);
         let (mut record, stage) = self.save(name, policy, reporter)?;
         if record.empty {
             return Err("当前未检测到可暂存的登录凭据或身份数据。".into());
         }
         record.name = name.into();
-        reporter.log(
-            "commit",
-            "running",
-            "正在更新身份保险库与浏览器绑定。",
-            0,
-            Some(1),
-        );
-        self.db.remember(&record)?;
-        self.db.rename(&record.id, &record.name)?;
-        let _ = self
-            .db
-            .set_summary(&record.id, &super::profile::summarize_stage(&stage));
-        self.db.complete(&record.id)?;
-        self.db.compact()?;
+        reporter.log("commit", "running", "正在保存身份备份。", 0, Some(1));
+        self.db
+            .backup(&record, &super::profile::summarize_stage(&stage))?;
         let _ = self.collect_generations();
-        reporter.log("commit", "ok", "身份保险库与浏览器绑定已更新。", 1, Some(1));
+        reporter.log("commit", "ok", "身份备份已保存。", 1, Some(1));
         reporter.log(
             "verify",
             "ok",
@@ -531,7 +537,6 @@ impl Store {
             );
             mutated = true;
             self.clear(&current, reporter, "clear")?;
-            identity::clear_stale_locks(&self.home);
             #[cfg(test)]
             if self.fail_after_clear {
                 return Err("fixture rollback".into());

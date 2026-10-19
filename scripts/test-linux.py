@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-# [INPUT]: 可丢弃构建树、安装前缀、Linux 安装器和真实产物验收层。
-# [OUTPUT]: 页面资源缺失拒绝、取消恢复、双重失败备份保留、glibc 上限和载荷边界回归。
+# [INPUT]: 可丢弃构建树、安装前缀、Linux 安装器、真实产物验收层和 Linux GIO 桌面解析器。
+# [OUTPUT]: 安装恢复/载荷边界及 Exec 双层解码和真实 GIO 参数往返回归；非 Linux 明确跳过 GIO。
 # [POS]: 离线临时目录测试，不安装到真实用户目录。
 # [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 import importlib.util
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -21,7 +26,7 @@ class InstallTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='ccbaga-test-')
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.build = self.root / 'build'
         self.prefix = self.root / 'prefix with spaces'
         for name in ['requirement-french', 'browser-runtime/LinuxBrowser/chrome', 'browser-ui/browser.html',
@@ -171,7 +176,7 @@ class InstallTests(unittest.TestCase):
 
     def test_exec_quoting_round_trips_through_both_desktop_entry_layers(self):
         def decode(value):
-            # Desktop Entry string escapes first, then the Exec double-quote rules.
+            # 先解码 Desktop Entry 字符串，再按 Exec 双引号规则还原参数。
             value = value.replace('\\\\', '\0')
             assert '\\' not in value
             value = value.replace('\0', '\\')
@@ -185,8 +190,39 @@ class InstallTests(unittest.TestCase):
                 out += value[i]
                 i += 1
             return out
-        for text in ['/tmp/say "hi"/app', '/tmp/back\\slash/app', '/tmp/`tick`/$HOME/app', '/tmp/mix "\\`$/app']:
+        for text in ['/tmp/say "hi"/app', '/tmp/back\\slash/app', '/tmp/`tick`/$HOME/app',
+                     '/tmp/mix "\\`$/app', '/tmp/中文 100% %U/app']:
             self.assertEqual(decode(installer.desktop_exec(Path(text)).replace('%%', '%')), text)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Real GIO parsing requires Linux; pure two-layer decoding still runs')
+    def test_exec_round_trips_through_real_gio_with_distinct_url_arguments(self):
+        gio = shutil.which('gio')
+        self.assertIsNotNone(gio, 'Linux regression requires the GIO tool supplied with GLib')
+        executable = self.root / 'say "hi"\\`tick`$HOME 100% %U 中文' / 'app'
+        executable.parent.mkdir()
+        executable.write_text('#!/bin/sh\nprintf \'%s\\0\' "$0" "$@" > "$CCBAGA_TEST_ARGV"\n')
+        executable.chmod(0o700)
+        receipt = self.root / 'argv'
+        desktop = self.root / 'fixture.desktop'
+        desktop.write_text('[Desktop Entry]\nType=Application\nName=CCBaga fixture\n'
+                           f'Exec={installer.desktop_exec(executable)} --browser %U\nTerminal=false\n')
+        urls = ['https://example.invalid/first?q=two%20words&mark=%25',
+                'https://example.invalid/second?q=%22quoted%22']
+        # 直接启动临时桌面文件，不注册默认程序；子进程无凭据且 HOME/XDG 全部隔离。
+        environment = {'PATH': os.defpath, 'HOME': str(self.root), 'XDG_DATA_HOME': str(self.root / 'data'),
+                       'XDG_CONFIG_HOME': str(self.root / 'config'), 'XDG_CACHE_HOME': str(self.root / 'cache'),
+                       'GIO_USE_VFS': 'local', 'GSETTINGS_BACKEND': 'memory', 'CCBAGA_TEST_ARGV': str(receipt)}
+        result = subprocess.run([gio, 'launch', str(desktop), *urls], env=environment, cwd=self.root,
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = [str(executable).encode(), b'--browser', *(url.encode() for url in urls), b'']
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if receipt.exists() and receipt.read_bytes().split(b'\0') == expected:
+                break
+            time.sleep(.01)
+        self.assertTrue(receipt.exists(), 'GIO did not launch the temporary fixture')
+        self.assertEqual(receipt.read_bytes().split(b'\0'), expected)
 
     def test_running_companion_blocks_replacement(self):
         installer.install(self.build, self.prefix)

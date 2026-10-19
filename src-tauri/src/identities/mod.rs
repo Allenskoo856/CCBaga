@@ -1,8 +1,10 @@
-// [INPUT]: SQLite 身份目录、加密压缩保险库、Cleaner 全局事务锁与 Tauri 进度通道。
-// [OUTPUT]: 当前/空/已保存身份、有界账号显示信息、用户保留选项、浏览器联动确认及真实阶段进度的停止/切换/恢复/删除命令。
+// [INPUT]: SQLite 身份目录与脱敏认证元数据、加密压缩保险库、精确进程查询、Cleaner 事务锁和 Tauri 进度通道。
+// [OUTPUT]: 只读当前/已保存摘要及有界进程预览、用户保留选项、浏览器联动确认与真实进度的停止/备份/切换/恢复/删除命令。
 // [POS]: GUI 身份管理的原生入口；刷新只读工作区、不回收暂存文件；不提供凭据读取、任意文件或网络接口。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 mod archive;
+#[cfg(test)]
+mod backup_tests;
 pub(crate) mod browser_link;
 #[cfg(test)]
 mod browser_link_tests;
@@ -13,6 +15,7 @@ mod credentials;
 pub(crate) mod database;
 #[cfg(test)]
 mod optimization_tests;
+pub(crate) mod portable;
 pub(crate) mod private;
 mod profile;
 mod store;
@@ -75,7 +78,8 @@ pub struct State {
     pub browser_warning: Option<String>,
     pub records: Vec<database::Record>,
     pub summaries: std::collections::BTreeMap<String, profile::Summary>,
-    pub sessions: Vec<profile::ActiveSession>,
+    pub processes: Option<Vec<profile::ProcessPreview>>,
+    pub processes_truncated: bool,
     pub active: String,
     pub recovery: Option<String>,
     pub running: bool,
@@ -113,24 +117,12 @@ fn state(app: &tauri::AppHandle) -> Result<State, String> {
     let root_path = crate::cleaner::identity::root()?;
     // 列表读取不能无锁打开会回收归档/暂存目录的 Store；文件事务只在持锁入口运行。
     let db = database::Database::open(&vault_path)?;
-    let mut records: Vec<_> = db.records()?.into_iter().filter(|r| !r.empty).collect();
-    let mut summaries = db.summaries()?;
-    if records
-        .iter()
-        .any(|r| r.account_key.is_none() || !summaries.contains_key(&r.id))
-    {
-        let cleaner = app.state::<crate::cleaner::Cleaner>();
-        if cleaner.enter().is_ok() {
-            let _ = store::Store::open(&vault_path, &root_path);
-            cleaner.leave();
-            if let Ok(updated) = db.records() {
-                records = updated.into_iter().filter(|r| !r.empty).collect();
-            }
-            if let Ok(updated) = db.summaries() {
-                summaries = updated;
-            }
-        }
-    }
+    let records = db.records()?.into_iter().filter(|r| !r.empty).collect();
+    let summaries = db.summaries()?;
+    let (processes, processes_truncated) =
+        profile::process_previews(crate::cleaner::identity::running_processes());
+    // 检查失败显示未知；不能把查询错误当作已确认停止。
+    let running = processes.as_ref().is_none_or(|rows| !rows.is_empty());
     Ok(State {
         browser: db.browser_link()?,
         browser_warning: app
@@ -141,11 +133,12 @@ fn state(app: &tauri::AppHandle) -> Result<State, String> {
             .clone(),
         records,
         summaries,
-        sessions: profile::active_sessions(&root_path),
+        processes,
+        processes_truncated,
         active: catalog::current_id(&vault_path, &root_path, &db)?
             .unwrap_or_else(|| "current".into()),
         recovery: db.get("recovery")?,
-        running: crate::cleaner::identity::processes_running()?,
+        running,
         current: profile::read(&root_path),
     })
 }
@@ -199,7 +192,6 @@ pub async fn identities_save(
             let mut store =
                 store::Store::open(&vault(&worker)?, &crate::cleaner::identity::root()?)?;
             store.save_current(&current_name, &policy, &reporter)?;
-            crate::browser::sync_current_launch_args(&worker);
             state(&worker)
         })();
         if let Err(e) = &result {

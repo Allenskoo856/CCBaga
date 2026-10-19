@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # [INPUT]: 本 Skill 执行层、临时密钥/配置和可丢弃本机子进程。
-# [OUTPUT]: URL、配对/权限、注入边界、有界传输、超时和订阅来源离线回归。
+# [OUTPUT]: 固定 URL、IPv4/DNS/无作用域 IPv6、配对/权限、注入边界、有界传输、超时和订阅来源离线回归。
 # [POS]: 安装后即可运行的标准库验收；不读取用户配置或连接 VPS。
 # [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 import importlib.util
@@ -103,9 +103,21 @@ class NetworkTests(unittest.TestCase):
     def test_mistyped_ipv4_is_not_accepted_as_a_hostname(self):
         for host in ['999.1.1.1','256.256.256.256','1.2.3','1.2.3.4.5','01.2.3.4','1234']:
             self.assertFalse(n.host_valid(host),host)
-            with self.assertRaises(ValueError,msg=host): n.validate_config({**self.config(),'vps':host})
+            for key in ['vps','home_host']:
+                with self.assertRaises(ValueError,msg=(key,host)): n.validate_config({**self.config(),key:host})
         for host in ['203.0.113.1','vps.example.com','1.example.com','localhost','a1']:
             self.assertTrue(n.host_valid(host),host)
+
+    def test_valid_host_forms_reach_ssh_and_socks_without_reinterpretation(self):
+        for host in ['203.0.113.1','2001:db8::1','2001:0db8:0:0:0:0:0:1','::ffff:203.0.113.1',
+                     'VPS-01.example.com','1.example.com','localhost','a1']:
+            with self.subTest(host=host):
+                conf = n.validate_config({**self.config(),'vps':host,'home_host':host})
+                self.assertEqual(conf['vps'],host)
+                self.assertEqual(conf['home_host'],host)
+                self.assertEqual(n.ssh_args(conf, self.root/'key', self.root/'connection.json')[-1],host)
+                target = f'[{host}]' if ':' in host else host
+                self.assertIn(json.dumps(f'socks5h://{target}:5328'),n.curl_config(conf))
 
     def test_agent_configuration_needs_no_terminal_and_never_prints_secrets(self):
         path = self.root/'private/connection.json'

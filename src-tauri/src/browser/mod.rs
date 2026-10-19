@@ -10,17 +10,13 @@ mod workspaces;
 use launch::launch_locked;
 pub(crate) use workspaces::delete_saved;
 pub(crate) use workspaces::identity_action;
+pub(crate) use workspaces::{portable_config, portable_prepare};
 pub(crate) fn configure_identity(
     app: &tauri::AppHandle,
     reporter: &Reporter,
     action: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     workspaces::transition(app, reporter, true, action)
-}
-pub(crate) fn sync_current_launch_args(app: &tauri::AppHandle) {
-    let state = app.state::<Browser>();
-    let _guard = state.gate.lock().unwrap();
-    let _ = refresh_launch_args(app);
 }
 #[cfg(target_os = "linux")]
 include!("linux.rs");

@@ -9,7 +9,7 @@ description: Collect user-supplied files and connection details, then handle DMI
 ---
 <!--
 [INPUT]: 用户直接提供的服务器地址、密钥附件/文件包与家宽连接资料；AI 负责整理本机私密配置。
-[OUTPUT]: 可验证的购买引导、SSH/出口预检、明确确认后的部署、私密订阅与 TUN 开关流程。
+[OUTPUT]: 同站点缺货处理与规格核对、SSH/出口预检、明确确认后的部署、私密订阅与 TUN 开关流程；不承诺实时库存。
 [POS]: 独立于应用 UI 的 AI 操作协议；执行复用 scripts/network.py 与 setup-vps.sh。
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 -->
@@ -40,6 +40,8 @@ Ask which exit country the user needs and whether this is a fresh server. Explai
 
 On DMIT: select a location reasonably close to the intended exit, a plan adequate for the user's bandwidth, **Debian 12 or 13**, a public IPv4 address, **root key login on SSH port 22**, and **Generate SSH Key after order**. The user's reference was LAX.AN4.Pro.MINI; verify current inventory/specifications rather than promising that name, price or capacity is still available. Do not silently buy a different plan. Public IPv6/hostnames are supported by the helper, but explain provider/client compatibility before deviating from the IPv4 baseline.
 
+If a region or plan is unavailable, explain that stock and prices can change. Offer only another region or equivalent plan **on the same supplier website**, or waiting for restocking. Before the user chooses, recheck the required specifications: DMIT must meet the Debian/public IPv4/root key SSH requirements above; Webshare must meet the fixed Static Residential / ISP, Direct Connection, Username/Password and SOCKS5 requirements in step 3. Ask the user to approve a changed region, price or plan; the user still performs checkout. Do not switch platforms, substitute a rotating/datacenter proxy, buy on the user's behalf or change either link/query parameter in `providers.json`. Never claim live availability without checking the supplier's current page; offline tests validate this workflow, not stock.
+
 After payment, ask the user to confirm the instance is running and supply its public IP/hostname. Three key files cannot tell you the VPS address. See [DMIT's key guide](https://docs.dmit.io/guide/sshkeys/ssh-keys).
 
 ## 2. Collect and validate the three files
@@ -59,6 +61,8 @@ After purchase, ask the user to copy the connection details or attach their curr
 First run `python3 scripts/test_network.py` locally. Distinguish this offline regression from a real network test; never claim a real VPS was deployed by passing fixtures.
 
 The AI prepares configuration; the user supplies information, not terminal input. Populate these fields from the supplied material: `vps`, `pem`, `ppk`, `pub`, `home_host`, integer `home_port`, `home_user`, `home_pass`, and `expected_ip`. The three key fields are paths resolved by the AI; when the proxy host is an IP, use that as the expected exit unless the supplier specifies a different fixed exit. For a hostname, obtain the actual expected IP from the supplier information.
+
+Host fields accept a valid IPv4 address, an unbracketed IPv6 address without an interface scope, or an ASCII hostname. Scoped forms such as `fe80::1%eth0` are local-interface addresses and are rejected. An invalid dotted IPv4 address or all-numeric hostname suffix is rejected rather than treated as DNS. Keep `expected_ip` a string containing the supplier's fixed IP literal, without a scope; never derive it from malformed input or weaken validation to continue. The helper brackets a valid IPv6 SOCKS address itself.
 
 Invoke `network.py configure` yourself with the JSON on **standard input**, not command arguments. Use the agent's subprocess/file capability, with stdin and captured output; never shell-trace, echo, or put credential values in command history. This validates all fields before creating `~/.config/ccbaga-network/connection.json` with private permissions (0600 on POSIX, a verified current-user-only ACL on Windows), rejects Git/skill destinations, and prints no credentials. No interactive terminal or `getpass` is required. Existing files are not overwritten; select a fresh private `--config` path for a new setup and preserve the earlier configuration. Tell the user only which prerequisites passed or what is missing.
 

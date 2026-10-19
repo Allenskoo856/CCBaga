@@ -67,3 +67,49 @@ fn recovery_refuses_profile_launch_preparation() {
     drop(connection);
     fs::remove_dir_all(fixture).unwrap();
 }
+#[test]
+fn portable_browser_config_preserves_custom_seed_without_touching_active_data() {
+    let fixture = tests::sample();
+    let root = fixture.join("browser");
+    let mut db = workspaces::database(&root).unwrap();
+    let identity = crate::identities::new_id().unwrap();
+    db.configure_browser(true, false, Some(&identity)).unwrap();
+    let scope = workspaces::ensure(&root).unwrap();
+    let active = db.browser_slot().unwrap();
+    let cookie = scope.join("profile/Default/Cookies");
+    crate::identities::private::directory(cookie.parent().unwrap()).unwrap();
+    crate::identities::private::write(&cookie, b"private local cookie").unwrap();
+    let mut config = config::load(&scope).unwrap();
+    config.seed = 12345;
+    config::save(&scope, &config).unwrap();
+    let exported = workspaces::portable_config_at(&root, &identity)
+        .unwrap()
+        .unwrap();
+    assert_eq!(exported.seed, 12345);
+    let new_slot = crate::identities::new_id().unwrap();
+    let prepared =
+        workspaces::portable_prepare_at(&root, &new_slot, &exported, &tests::machine()).unwrap();
+    let mut names: Vec<_> = fs::read_dir(&prepared)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["config.json", "seed.owner"]);
+    assert!(!prepared.join("profile").exists());
+    assert_eq!(fs::read(prepared.join("seed.owner")).unwrap(), b"12345");
+    assert_eq!(db.browser_slot().unwrap(), active);
+    assert!(db.browser_seed(&new_slot).unwrap().is_none());
+    assert_eq!(fs::read(&cookie).unwrap(), b"private local cookie");
+    assert!(
+        workspaces::portable_prepare_at(&root, &new_slot, &exported, &tests::machine()).is_err()
+    );
+    crate::identities::private::write(&scope.join("seed.owner"), b"invalid owner").unwrap();
+    assert!(workspaces::portable_config_at(&root, &identity).is_err());
+    assert!(
+        workspaces::portable_config_at(&root, &crate::identities::new_id().unwrap())
+            .unwrap()
+            .is_none()
+    );
+    drop(db);
+    fs::remove_dir_all(fixture).unwrap();
+}

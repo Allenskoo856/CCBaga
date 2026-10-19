@@ -107,7 +107,7 @@ export function VpsPanel() {
                 ['系统','Debian 12 / 13'],['地址','IPv4'],['登录','SSH Key · root:22'],['文件','PEM · PPK · PUB'],['密钥选项','Generate SSH Key after order']
             ]:[
                 ['类型','Static Residential (ISP)'],['连接','Direct Connection'],['认证','Username / Password'],['协议','SOCKS5'],['端口','以面板为准']
-            ]).map(([label,value])=><div key={label}><dt>{t(label)}</dt><dd>{t(value)}</dd></div>)}</dl>
+            ]).map(([label,value])=><div key={label}><dt>{t(label)}</dt><dd>{t(value)}</dd></div>)}</dl><p className="resource-stock-note">{t('缺货时可在原站点选择其他地区的同类套餐，或等待补货；购买前核对所需规格。')}</p>
         </AppDialog>
         {error&&<p role="alert" className="system-feedback error">{t(error)}</p>}
     </section>;

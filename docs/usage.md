@@ -15,12 +15,14 @@ Open **Guide** in the sidebar. The page supports English and Chinese.
 | Page | What to do |
 | --- | --- |
 | Easy setup | Choose a region and select an action. Clearing cache keeps sign-ins; changing the fingerprint restarts CCBaga-B. |
-| Claude identities | Save your work before archiving or switching. Sign-in data follows the identity; choose what else to keep or archive. An empty identity starts a fresh local workspace. |
+| Claude identities | Save your work before backing up or switching. Save backup retains the workspace and browser binding; Export/Import moves saved snapshots between devices with the same OS. Sign-in data follows the identity; choose what else to keep or archive. An empty identity starts a fresh local workspace. |
 | Browser | Save settings, then open the check page. Clear cache retains sign-ins. Clear all browser data permanently removes the current identity's passwords, bookmarks, history, extensions, settings and sessions without a backup; confirm separately. |
 | Computer | Adjust time zone, language and region separately. Permission, a restart or sign-out may be required. This does not change your public IP. |
 | Network | Choose an AI tool and give it the copied prompt to install the Skill. The AI handles connection details and asks before remote deployment. The app does not collect SSH keys or perform deployment. |
 
 Recognized accounts update the same saved identity instead of creating another copy. The current account appears once. **Link browser** is enabled by default and restores separate website data with each identity. The browser check page shows the local identity card above its environment checks. Save browser work before switching; first use requires website sign-in. Existing browser data is preserved; adopting or deleting it requires an explicit choice. See [local identity storage](identity-storage.md) for retention choices, archive size and recovery behavior.
+
+**Save backup** confirms the exact archived categories and stops recognized Claude processes. Local expiry badges do not verify server access. **Export** requires a private password; **Import** adds a saved card without switching and excludes browser website sign-ins. See [storage and transfer limits](identity-storage.md#move-a-saved-identity-to-another-device).
 
 Claude Code maintenance uninstalls or reinstalls the CLI program while retaining configuration, identities and project files.
 

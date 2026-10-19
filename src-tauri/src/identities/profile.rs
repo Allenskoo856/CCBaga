@@ -1,5 +1,5 @@
-// [INPUT]: 默认 .claude.json 的 oauthAccount 显示字段、本地 .credentials.json 订阅/过期时间戳、活动会话 PID 元数据及白名单桌面工作区元数据。
-// [OUTPUT]: 当前本地身份与已保存身份的脱敏摘要（用户名/邮箱/组织/套餐档位/OAuth有效状态）及有界活动会话列表；不输出令牌、不联网验证账号。
+// [INPUT]: 默认 .claude.json 的 oauthAccount 显示字段、本地凭据的订阅/过期元数据、已认证暂存归档和精确进程查询结果。
+// [OUTPUT]: 当前身份与已保存摘要的显示白名单、按读取时间计算的本地凭据状态，以及至多 32 个进程预览；查询失败明确未知。
 // [POS]: 身份卡片的只读展示边界；不读取钥匙串、Cookie 正文或任意项目文件。
 // [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,8 @@ pub struct Current {
     pub plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Summary {
@@ -44,9 +46,63 @@ pub struct Summary {
     pub plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActiveSession {
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct AuthMetadata {
+    access: bool,
+    refresh: bool,
+    api_key: bool,
+    expires_at: Option<i64>,
+}
+impl AuthMetadata {
+    fn status_at(&self, now_ms: i64) -> &'static str {
+        if self.access {
+            match self.expires_at.filter(|exp| *exp > 0) {
+                Some(exp) if exp > now_ms => "local_unexpired",
+                Some(_) if self.refresh => "refresh_available",
+                Some(_) => "expired",
+                None => "unknown",
+            }
+        } else if self.api_key {
+            "api_key"
+        } else {
+            "unknown"
+        }
+    }
+    fn expiry(&self) -> Option<i64> {
+        self.expires_at.filter(|exp| self.access && *exp > 0)
+    }
+}
+#[derive(Default, Serialize, Deserialize)]
+pub(super) struct SavedSummary {
+    #[serde(flatten)]
+    summary: Summary,
+    #[serde(default)]
+    auth: Option<AuthMetadata>,
+}
+impl SavedSummary {
+    pub(super) fn public_at(&self, now_ms: i64) -> Summary {
+        let mut summary = self.summary.clone();
+        summary.auth_status = Some(
+            self.auth
+                .as_ref()
+                .map_or("unknown", |auth| auth.status_at(now_ms))
+                .into(),
+        );
+        summary.expires_at = self.auth.as_ref().and_then(AuthMetadata::expiry);
+        summary
+    }
+}
+pub(super) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessPreview {
     pub pid: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
@@ -99,7 +155,7 @@ fn read_bounded_json(path: &Path, max_bytes: u64) -> Option<Value> {
     }
     serde_json::from_slice(&bytes).ok()
 }
-fn extract_credentials_meta(value: &Value) -> (Option<String>, Option<String>, Option<String>) {
+fn extract_credentials_meta(value: &Value) -> (Option<String>, Option<String>, AuthMetadata) {
     let oauth = value.get("claudeAiOauth").unwrap_or(value);
     let sub = oauth.get("subscriptionType").and_then(Value::as_str);
     let tier = oauth.get("rateLimitTier").and_then(Value::as_str);
@@ -112,28 +168,15 @@ fn extract_credentials_meta(value: &Value) -> (Option<String>, Option<String>, O
         .and_then(Value::as_str)
         .is_some_and(|s| !s.trim().is_empty());
     let expires_at = oauth.get("expiresAt").and_then(Value::as_i64);
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let status = if has_access {
-        match expires_at {
-            Some(exp) if exp > 0 && exp <= now_ms => {
-                if has_refresh {
-                    Some("refresh_needed".into())
-                } else {
-                    Some("expired".into())
-                }
-            }
-            _ => Some("valid".into()),
-        }
-    } else {
-        None
-    };
     (
         sub.map(str::to_string),
         tier.map(str::to_string),
-        status,
+        AuthMetadata {
+            access: has_access,
+            refresh: has_refresh,
+            api_key: false,
+            expires_at,
+        },
     )
 }
 fn extract_settings_api_auth(value: &Value) -> bool {
@@ -164,7 +207,7 @@ fn parse(bytes: &[u8]) -> Result<Current, serde_json::Error> {
             organization: display(account.organization_name, 120),
             unavailable: false,
             plan: format_plan(None, None, account.billing_type.as_deref()),
-            auth_status: None,
+            ..Current::default()
         },
         None => Current {
             present: config.api_key.is_some(),
@@ -210,15 +253,14 @@ pub fn read(home: &Path) -> Current {
     if !current.unavailable {
         let mut sub = None;
         let mut tier = None;
+        let mut auth = AuthMetadata::default();
         if let Some(cred) = read_bounded_json(&home.join(".claude/.credentials.json"), 1024 * 1024)
         {
-            let (s, t, status) = extract_credentials_meta(&cred);
+            let (s, t, metadata) = extract_credentials_meta(&cred);
             sub = s;
             tier = t;
-            if status.is_some() {
-                current.auth_status = status;
-                current.present = true;
-            }
+            current.present |= metadata.access || metadata.refresh;
+            auth = metadata;
         }
         if let Some(resolved_plan) =
             format_plan(sub.as_deref(), tier.as_deref(), billing_type.as_deref())
@@ -227,21 +269,22 @@ pub fn read(home: &Path) -> Current {
         }
         let mut has_settings_api = false;
         for name in ["settings.json", "settings.local.json"] {
-            if let Some(val) =
-                read_bounded_json(&home.join(".claude").join(name), 2 * 1024 * 1024)
+            if let Some(val) = read_bounded_json(&home.join(".claude").join(name), 2 * 1024 * 1024)
             {
                 has_settings_api |= extract_settings_api_auth(&val);
             }
         }
-        if current.auth_status.is_none() && (has_primary_api_key || has_settings_api) {
-            current.auth_status = Some("api_key".into());
-        }
+        auth.api_key = has_primary_api_key || has_settings_api;
+        current.present |= auth.api_key;
+        current.auth_status = Some(auth.status_at(now_ms()).into());
+        current.expires_at = auth.expiry();
     }
     current.present |= crate::cleaner::identity::desktop_present(home);
     current
 }
-pub(super) fn summarize_stage(stage: &super::archive::Stage) -> Summary {
+pub(super) fn summarize_stage(stage: &super::archive::Stage) -> SavedSummary {
     let mut summary = Summary::default();
+    let mut auth = AuthMetadata::default();
     let mut billing_type = None;
     let mut sub = None;
     let mut tier = None;
@@ -263,12 +306,10 @@ pub(super) fn summarize_stage(stage: &super::archive::Stage) -> Summary {
                 }
             }
         } else if source.path == home.join(".claude/.credentials.json") {
-            let (s, t, status) = extract_credentials_meta(&val);
+            let (s, t, metadata) = extract_credentials_meta(&val);
             sub = s;
             tier = t;
-            if status.is_some() {
-                summary.auth_status = status;
-            }
+            auth = metadata;
         } else if source.path == home.join(".claude/settings.json")
             || source.path == home.join(".claude/settings.local.json")
         {
@@ -281,16 +322,17 @@ pub(super) fn summarize_stage(stage: &super::archive::Stage) -> Summary {
                 if let Ok(bytes) =
                     base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
                 {
+                    let bytes = zeroize::Zeroizing::new(bytes);
                     if let Ok(val) = serde_json::from_slice::<Value>(&bytes) {
-                        let (s, t, status) = extract_credentials_meta(&val);
+                        let (s, t, metadata) = extract_credentials_meta(&val);
                         if sub.is_none() {
                             sub = s;
                         }
                         if tier.is_none() {
                             tier = t;
                         }
-                        if summary.auth_status.is_none() {
-                            summary.auth_status = status;
+                        if !auth.access {
+                            auth = metadata;
                         }
                     }
                 }
@@ -298,49 +340,28 @@ pub(super) fn summarize_stage(stage: &super::archive::Stage) -> Summary {
         }
     }
     summary.plan = format_plan(sub.as_deref(), tier.as_deref(), billing_type.as_deref());
-    if summary.auth_status.is_none() && has_api_key {
-        summary.auth_status = Some("api_key".into());
+    auth.api_key = has_api_key;
+    SavedSummary {
+        summary,
+        auth: Some(auth),
     }
-    summary
 }
-pub fn active_sessions(home: &Path) -> Vec<ActiveSession> {
-    let running = crate::cleaner::identity::running_processes();
-    if running.is_empty() {
-        return Vec::new();
-    }
-    let sessions_dir = home.join(".claude/sessions");
-    let mut out = Vec::with_capacity(running.len());
-    for proc in running {
-        let mut workspace = None;
-        let mut entrypoint = proc.name.clone();
-        let session_file = sessions_dir.join(format!("{}.json", proc.pid));
-        if let Some(val) = read_bounded_json(&session_file, 64 * 1024) {
-            if let Some(cwd) = val.get("cwd").and_then(Value::as_str) {
-                let folder = Path::new(cwd)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(str::to_string)
-                    .or_else(|| Some(cwd.to_string()));
-                workspace = display(folder, 48);
-            }
-            if let Some(ep) = val.get("entrypoint").and_then(Value::as_str) {
-                entrypoint = match ep {
-                    "cli" => "CLI".into(),
-                    "claude-vscode" => "VS Code".into(),
-                    "claude-desktop" => "Claude Desktop".into(),
-                    "sdk-cli" => "SDK".into(),
-                    "mcp" => "MCP".into(),
-                    other => display(Some(other.to_string()), 24).unwrap_or(entrypoint),
-                };
-            }
-        }
-        out.push(ActiveSession {
+pub fn process_previews(
+    result: Result<Vec<crate::cleaner::ClaudeProcess>, String>,
+) -> (Option<Vec<ProcessPreview>>, bool) {
+    let Ok(running) = result else { return (None, false); };
+    let truncated = running.len() > 32;
+    let out = running
+        .into_iter()
+        .take(32)
+        .map(|proc| ProcessPreview {
             pid: proc.pid,
-            workspace,
-            entrypoint,
-        });
-    }
-    out
+            // PID 不能证明会话索引属于这次进程；不读取旧 sessions 文件猜测工作区。
+            workspace: None,
+            entrypoint: display(Some(proc.name), 48).unwrap_or_else(|| "Claude".into()),
+        })
+        .collect();
+    (Some(out), truncated)
 }
 #[cfg(test)]
 mod tests {
@@ -361,5 +382,94 @@ mod tests {
             format_plan(Some("max"), Some("default_claude_max_5x"), None).as_deref(),
             Some("Max 5x")
         );
+    }
+    #[test]
+    fn auth_metadata_expires_on_read_and_legacy_or_incomplete_values_are_unknown() {
+        let (_, _, mut auth) = extract_credentials_meta(&serde_json::json!({
+            "claudeAiOauth": {"accessToken":"private-access", "refreshToken":"private-refresh", "expiresAt":2000}
+        }));
+        let saved = SavedSummary {
+            auth: Some(auth.clone()),
+            ..SavedSummary::default()
+        };
+        assert_eq!(
+            saved.public_at(1000).auth_status.as_deref(),
+            Some("local_unexpired")
+        );
+        assert_eq!(
+            saved.public_at(2000).auth_status.as_deref(),
+            Some("refresh_available")
+        );
+        auth.refresh = false;
+        assert_eq!(auth.status_at(2000), "expired");
+        for expiry in [None, Some(0), Some(-1)] {
+            auth.expires_at = expiry;
+            assert_eq!(auth.status_at(1000), "unknown");
+        }
+        auth.access = false;
+        auth.refresh = true;
+        auth.expires_at = Some(2000);
+        assert_eq!(auth.status_at(1000), "unknown");
+        let old: SavedSummary = serde_json::from_value(serde_json::json!({
+            "email":"fixture@example.invalid", "auth_status":"valid", "expires_at":9999
+        }))
+        .unwrap();
+        assert_eq!(old.public_at(1000).auth_status.as_deref(), Some("unknown"));
+        assert_eq!(old.public_at(1000).expires_at, None);
+        let raw = serde_json::to_string(&saved).unwrap();
+        assert!(!raw.contains("private-access") && !raw.contains("private-refresh"));
+        let public = serde_json::to_string(&saved.public_at(1000)).unwrap();
+        assert!(!public.contains("\"auth\"") && !public.contains("refreshToken"));
+    }
+    #[test]
+    fn settings_only_auth_is_present_without_reading_keychain() {
+        let f = crate::identities::optimization_tests::Fixture::new();
+        f.write(
+            ".claude/settings.json",
+            br#"{"theme":"dark","env":{"ANTHROPIC_API_KEY":"private-api-key"}}"#,
+        );
+        let current = read(&f.home);
+        assert!(current.present);
+        assert_eq!(current.auth_status.as_deref(), Some("api_key"));
+        assert!(!serde_json::to_string(&current)
+            .unwrap()
+            .contains("private-api-key"));
+        let s = super::super::store::Store::open(&f.vault, &f.home).unwrap();
+        let (record, stage) = s
+            .save(
+                "API",
+                &super::super::Policy::default(),
+                &crate::progress::Reporter::channel(None),
+            )
+            .unwrap();
+        assert!(!record.empty);
+        assert_eq!(
+            summarize_stage(&stage)
+                .public_at(1000)
+                .auth_status
+                .as_deref(),
+            Some("api_key")
+        );
+    }
+    #[test]
+    fn process_preview_is_bounded_read_only_and_distinguishes_unknown() {
+        let rows = (0..40)
+            .map(|n| crate::cleaner::ClaudeProcess {
+                pid: n + 10,
+                name: "Claude Desktop".into(),
+                executable: "private-command-token".into(),
+                #[cfg(windows)]
+                created: 1,
+            })
+            .collect();
+        let (previews, truncated) = process_previews(Ok(rows));
+        let previews = previews.unwrap();
+        assert_eq!(previews.len(), 32);
+        assert!(truncated && previews.iter().all(|p| p.workspace.is_none()));
+        assert!(!serde_json::to_string(&previews)
+            .unwrap()
+            .contains("private-command-token"));
+        assert_eq!(process_previews(Ok(Vec::new())), (Some(Vec::new()), false));
+        assert_eq!(process_previews(Err("query failed".into())), (None, false));
     }
 }

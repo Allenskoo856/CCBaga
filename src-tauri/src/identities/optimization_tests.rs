@@ -13,13 +13,13 @@ use std::{
     path::PathBuf,
     time::Instant,
 };
-struct Fixture {
-    root: PathBuf,
-    home: PathBuf,
-    vault: PathBuf,
+pub(super) struct Fixture {
+    pub(super) root: PathBuf,
+    pub(super) home: PathBuf,
+    pub(super) vault: PathBuf,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = canonicalize(std::env::temp_dir())
             .unwrap()
             .join(format!("baga-opt-{}", new_id().unwrap()));
@@ -31,12 +31,12 @@ impl Fixture {
             home,
         }
     }
-    fn write(&self, path: &str, text: &[u8]) {
+    pub(super) fn write(&self, path: &str, text: &[u8]) {
         let path = self.home.join(path);
         private::directory(path.parent().unwrap()).unwrap();
         private::write(&path, text).unwrap();
     }
-    fn login(&self, id: &str, org: &str, token: &str) {
+    pub(super) fn login(&self, id: &str, org: &str, token: &str) {
         self.write(".claude.json", serde_json::to_string(&serde_json::json!({"oauthAccount":{"accountUuid":id,"organizationUuid":org,"emailAddress":format!("{id}@example.invalid"),"displayName":id}})).unwrap().as_bytes());
         self.write(
             ".claude/.credentials.json",
@@ -45,7 +45,7 @@ impl Fixture {
                 .as_bytes(),
         );
     }
-    fn token(&self) -> String {
+    pub(super) fn token(&self) -> String {
         let value: serde_json::Value =
             serde_json::from_slice(&fs::read(self.home.join(".claude/.credentials.json")).unwrap())
                 .unwrap();
@@ -526,7 +526,12 @@ fn retained_proxy_and_account_repo_paths_follow_the_selected_policy() {
     s.switch("empty", "Account A", &policy, &r).unwrap();
 
     // 选择保留设置时，共享代理保持可用；账号与仓库索引按各自保留策略处理。
-    assert!(!f.home.join(".claude/.oauth_refresh.lock.owner").exists());
+    assert_eq!(
+        fs::read(f.home.join(".claude/.oauth_refresh.lock.owner")).unwrap(),
+        br#"{"pid":1872,"pidSpace":"HOST-A"}"#
+    );
+    // 瞬态锁不随身份归档；结束进程、备份、切换均不暗中删除工作区锁。
+    fs::remove_file(f.home.join(".claude/.oauth_refresh.lock.owner")).unwrap();
     let empty_claude: serde_json::Value =
         serde_json::from_slice(&fs::read(f.home.join(".claude.json")).unwrap()).unwrap();
     assert!(empty_claude.get("changelogLastFetched").is_none());
@@ -577,10 +582,11 @@ fn retained_proxy_and_account_repo_paths_follow_the_selected_policy() {
     assert!(restored_claude["githubRepoPaths"]
         .get("owner-b/repo")
         .is_none());
+    assert!(!f.home.join(".claude/.oauth_refresh.lock.owner").exists());
 }
 
 #[test]
-fn in_place_save_and_summary_backfill_and_lock_cleanup() {
+fn in_place_backup_preserves_workspace_and_missing_summaries_stay_lazy() {
     let f = Fixture::new();
     let r = Reporter::channel(None);
     let p = Policy::default();
@@ -609,45 +615,46 @@ fn in_place_save_and_summary_backfill_and_lock_cleanup() {
     f.write(".claude.lock", b"stale");
     f.write(".claude.json.lock", b"stale-json");
 
-    // 1. In-place save snapshots into vault without clearing live files or switching browser slot
+    // 原地备份不改工作区、锁或浏览器指针，也不冒充完成过联动切换。
     s.save_current("主力 Max 20x", &p, &r).unwrap();
-    assert!(!f.home.join(".claude.lock").exists());
-    assert!(!f.home.join(".claude.json.lock").exists());
+    assert_eq!(fs::read(f.home.join(".claude.lock")).unwrap(), b"stale");
+    assert_eq!(
+        fs::read(f.home.join(".claude.json.lock")).unwrap(),
+        b"stale-json"
+    );
     assert_eq!(f.token(), "tok-max");
     assert_eq!(s.records().len(), 1);
     let rec = &s.records()[0];
     assert_eq!(rec.id, draft_slot);
     assert_eq!(rec.name, "主力 Max 20x");
     assert_eq!(s.db.browser_slot().unwrap(), draft_slot);
-    assert_eq!(
-        s.db.browser_for(&rec.id).unwrap().as_deref(),
-        Some(draft_slot.as_str())
-    );
+    assert!(s.db.browser_for(&rec.id).unwrap().is_none());
+    assert!(s.db.get("active").unwrap().is_none());
 
-    // 2. Check live profile and persisted summary
+    // 摘要只输出显示字段和本地时间状态，不宣称服务器验证成功。
     let current = profile::read(&f.home);
     assert_eq!(current.plan.as_deref(), Some("Max 20x"));
-    assert_eq!(current.auth_status.as_deref(), Some("valid"));
+    assert_eq!(current.auth_status.as_deref(), Some("local_unexpired"));
 
     let summaries = s.db.summaries().unwrap();
     let sum = summaries.get(&rec.id).unwrap();
     assert_eq!(sum.email.as_deref(), Some("max@example.invalid"));
     assert_eq!(sum.organization.as_deref(), Some("Max Org"));
     assert_eq!(sum.plan.as_deref(), Some("Max 20x"));
-    assert_eq!(sum.auth_status.as_deref(), Some("valid"));
+    assert_eq!(sum.auth_status.as_deref(), Some("local_unexpired"));
+    assert_eq!(sum.expires_at, Some(4102444800000));
 
-    // 3. Simulate legacy archive without summary row and verify automatic backfill on Store::open
+    // 缺摘要不能触发自动解密归档；即使该归档损坏也保持目录可读。
     let rec_id = rec.id.clone();
+    let archive = rec.archive.clone();
     s.db.connection
         .execute("DELETE FROM identity_summaries WHERE id=?1", [&rec_id])
         .unwrap();
     assert!(s.db.summaries().unwrap().is_empty());
+    fs::write(f.vault.join(archive), b"synthetic unreadable archive").unwrap();
     drop(s);
 
     let s = store::Store::open(&f.vault, &f.home).unwrap();
-    let backfilled = s.db.summaries().unwrap();
-    let sum2 = backfilled.get(&rec_id).unwrap();
-    assert_eq!(sum2.email.as_deref(), Some("max@example.invalid"));
-    assert_eq!(sum2.plan.as_deref(), Some("Max 20x"));
+    assert!(s.db.summaries().unwrap().is_empty());
+    assert_eq!(s.records()[0].id, rec_id);
 }
-
